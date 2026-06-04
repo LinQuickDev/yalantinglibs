@@ -32,21 +32,9 @@
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack.hpp"
+#include "ylt/urma/urma_api.h"
+#include "ylt/urma/urma_types.h"
 
-// URMA forward declarations
-struct urma_context_t;
-struct urma_jfc_t;
-struct urma_jfr_t;
-struct urma_jetty_t;
-struct urma_target_jetty_t;
-struct urma_target_seg_t;
-struct urma_device_t;
-struct urma_eid_t;
-struct urma_cr_t;
-struct urma_jfs_wr;
-struct urma_seg_cfg_t;
-struct urma_token_t;
-struct urma_init_attr_t;
 
 enum class urma_transport_type_t : int;
 
