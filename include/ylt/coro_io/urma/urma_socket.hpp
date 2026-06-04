@@ -211,9 +211,13 @@ struct urma_socket_shared_state_t
 
     // Build URMA send WR
     urma_jfs_wr wr{};
+    wr.opcode = URMA_OPC_SEND;
     wr.next = nullptr;
-    wr.sg_list = &sge;
-    wr.num_sge = sge.length ? 1 : 0;
+    urma_sge_t sge_list[1];
+    sge_list[0].addr = sge.addr;
+    sge_list[0].len = sge.length;
+    wr.send.src.sge = sge_list;
+    wr.send.src.num_sge = sge.length ? 1 : 0;
     wr.user_ctx = reinterpret_cast<uint64_t>(new callback_t(std::move(handler)));
 
     urma_jfs_wr* bad_wr = nullptr;
@@ -268,17 +272,17 @@ struct urma_socket_shared_state_t
       // Determine if this is a send or recv completion based on context
       if (!send_cb_.empty()) {
         urma_socket_shared_state_t::resume(
-            std::pair{ec, static_cast<std::size_t>(cr.len)},
+            std::pair{ec, static_cast<std::size_t>(cr.completion_len)},
             send_cb_.pop());
       }
       else if (!recv_cb_) {
         recv_result_.push(
-            std::pair{ec, static_cast<std::size_t>(cr.len)});
+            std::pair{ec, static_cast<std::size_t>(cr.completion_len)});
       }
       else {
         recv_buf_ = recv_queue_.pop();
         urma_socket_shared_state_t::resume(
-            std::pair{ec, static_cast<std::size_t>(cr.len)},
+            std::pair{ec, static_cast<std::size_t>(cr.completion_len)},
             std::move(recv_cb_));
       }
     }
@@ -379,15 +383,6 @@ class urma_socket_t {
 
   void post_send(urma_sge buffer, callback_t&& cb) {
     state_->post_send_impl(buffer, std::move(cb));
-  }
-
-  // For ib_socket_t compatibility - accept ibv_sge and convert
-  void post_send(ibv_sge buffer, callback_t&& cb) {
-    urma_sge sge;
-    sge.addr = buffer.addr;
-    sge.length = buffer.length;
-    sge.lkey = buffer.lkey;
-    post_send(sge, std::move(cb));
   }
 
   uint32_t get_buffer_size() const noexcept { return buffer_size_; }
