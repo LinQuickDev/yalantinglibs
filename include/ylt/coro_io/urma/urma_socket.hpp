@@ -43,25 +43,19 @@ namespace detail {
 
 struct urma_socket_shared_state_t;
 
-// URMA-specific buffer representation (compatible with ibv_sge layout)
-struct urma_sge {
-  uint64_t addr;
-  uint32_t length;
-  uint32_t lkey;
-};
-
-struct urma_buffer_t {
+// URMA-specific buffer representation for coro_io
+// Note: Avoid naming conflicts with URMA library types (urma_sge_t, urma_buf_t)
+struct urma_buf_t {
   void* addr = nullptr;
   size_t length = 0;
-  uint32_t lkey = 0;  // URMA key (used similarly to lkey)
+  uint32_t lkey = 0;
 
-  urma_sge subview(size_t offset = 0, size_t len = 0) const {
-    urma_sge sge;
+  urma_sge_t subview(size_t offset = 0, size_t len = 0) const {
+    urma_sge_t sge;
     sge.addr = reinterpret_cast<uint64_t>(
         reinterpret_cast<char*>(addr) + offset);
-    sge.length = (len == 0) ? static_cast<uint32_t>(length - offset)
-                             : static_cast<uint32_t>(len);
-    sge.lkey = lkey;
+    sge.len = (len == 0) ? static_cast<uint32_t>(length - offset)
+                           : static_cast<uint32_t>(len);
     return sge;
   }
 
@@ -92,15 +86,15 @@ struct urma_socket_shared_state_t
   urma_target_jetty_t* remote_jetty_ = nullptr;
 
   // Buffer management
-  std::vector<urma_buffer_t> recv_buffers_;
-  std::vector<urma_buffer_t> send_buffers_;
-  circle_buffer<urma_buffer_t> recv_queue_;
-  circle_buffer<urma_buffer_t> send_queue_;
+  std::vector<urma_buf_t> recv_buffers_;
+  std::vector<urma_buf_t> send_buffers_;
+  circle_buffer<urma_buf_t> recv_queue_;
+  circle_buffer<urma_buf_t> send_queue_;
   circle_buffer<std::pair<std::error_code, std::size_t>> recv_result_;
   circle_buffer<callback_t> send_cb_;
 
   callback_t recv_cb_;
-  urma_buffer_t recv_buf_;
+  urma_buf_t recv_buf_;
 
   std::size_t recv_buffer_cnt_ = 0;
   std::size_t send_buffer_cnt_ = 0;
@@ -135,7 +129,7 @@ struct urma_socket_shared_state_t
 
   auto get_executor() const noexcept { return executor_->get_asio_executor(); }
 
-  void return_send_buffer(urma_buffer_t buffer) {
+  void return_send_buffer(urma_buf_t buffer) {
     assert(!send_queue_.full());
     send_queue_.push(std::move(buffer));
   }
@@ -189,7 +183,7 @@ struct urma_socket_shared_state_t
     co_return;
   }
 
-  urma_buffer_t release_send_buffer() noexcept {
+  urma_buf_t release_send_buffer() noexcept {
     assert(send_queue_.size());
     send_buffer_data_size_ = 0;
     return send_queue_.pop();
@@ -199,7 +193,7 @@ struct urma_socket_shared_state_t
 
   void post_send_impl(urma_sge sge, callback_t&& handler,
                       bool skip_check_close = false) {
-    ELOG_TRACE << "post send sge length:" << sge.length
+    ELOG_TRACE << "post send sge length:" << sge.len
                << ", address:" << sge.addr;
 
     if (!skip_check_close && has_close_) [[unlikely]] {
@@ -215,9 +209,9 @@ struct urma_socket_shared_state_t
     wr.next = nullptr;
     urma_sge_t sge_list[1];
     sge_list[0].addr = sge.addr;
-    sge_list[0].len = sge.length;
+    sge_list[0].len = sge.len;
     wr.send.src.sge = sge_list;
-    wr.send.src.num_sge = sge.length ? 1 : 0;
+    wr.send.src.num_sge = sge.len ? 1 : 0;
     wr.user_ctx = reinterpret_cast<uint64_t>(new callback_t(std::move(handler)));
 
     urma_jfs_wr* bad_wr = nullptr;
@@ -567,7 +561,7 @@ class urma_socket_t {
   auto get_executor() const { return executor_->get_asio_executor(); }
   auto get_coro_executor() const { return executor_; }
 
-  urma_buffer_t release_send_buffer() noexcept {
+  urma_buf_t release_send_buffer() noexcept {
     return state_->release_send_buffer();
   }
 
@@ -578,7 +572,7 @@ class urma_socket_t {
   std::optional<urma_sge> get_send_buffer_view() noexcept {
     if (state_->send_queue_.empty()) {
       // Get buffer from pool
-      urma_buffer_t buf;
+      urma_buf_t buf;
       // TODO: Get from URMA buffer pool
       if (!buf) {
         ELOG_WARN << "buffer out of limit, get send buffer failed";
