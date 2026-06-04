@@ -140,6 +140,11 @@ class coro_rpc_server_base {
       acceptors_.push_back(std::make_unique<coro_io::tcp_server_acceptor>(
           config.address, config.port));
     }
+#ifdef YLT_ENABLE_URMA
+    if (config.urma_config) {
+      init_urma(config.urma_config.value());
+    }
+#endif
   }
 
   ~coro_rpc_server_base() {
@@ -163,6 +168,11 @@ class coro_rpc_server_base {
       std::vector<std::shared_ptr<coro_io::ib_device_t>> ibv_dev_lists = {}) {
     ibv_config_ = conf;
     ibv_dev_lists_ = std::move(ibv_dev_lists);
+  }
+#endif
+#ifdef YLT_ENABLE_URMA
+  void init_urma(const coro_io::urma_socket_t::config_t &conf = {}) {
+    urma_config_ = conf;
   }
 #endif
 
@@ -562,6 +572,20 @@ class coro_rpc_server_base {
     co_return init_ok;
   }
 #endif
+#ifdef YLT_ENABLE_URMA
+  async_simple::coro::Lazy<bool> update_to_urma(coro_connection *conn) {
+    bool init_ok = true;
+    auto &wrapper = conn->socket_wrapper();
+    try {
+      wrapper = {std::move(*wrapper.socket()), wrapper.get_executor(),
+                 urma_config_.value_or(coro_io::urma_socket_t::config_t{})};
+    } catch (...) {
+      ELOG_WARN << "init urma connection failed";
+      init_ok = false;
+    }
+    co_return init_ok;
+  }
+#endif
 
   async_simple::coro::Lazy<void> start_one(
       std::shared_ptr<coro_connection> conn) noexcept {
@@ -588,6 +612,19 @@ class coro_rpc_server_base {
           auto result = co_await update_to_rdma(conn.get());
           if (!result) {
             ELOG_WARN << "rdma init failed";
+            co_return;
+          }
+          break;
+        }
+#endif
+#ifdef YLT_ENABLE_URMA
+        if (urma_config_.has_value() && result.magic_number.size() == 1 &&
+            result.magic_number[0] ==
+                coro_io::urma_socket_t::urma_md5_first_header) {
+          ELOG_TRACE << "protocol is urma, try to update";
+          auto result = co_await update_to_urma(conn.get());
+          if (!result) {
+            ELOG_WARN << "urma init failed";
             co_return;
           }
           break;
@@ -634,6 +671,9 @@ class coro_rpc_server_base {
   std::optional<coro_io::ib_socket_t::config_t> ibv_config_;
   std::vector<std::shared_ptr<coro_io::ib_device_t>> ibv_dev_lists_;
   std::atomic<std::size_t> rr_index_ = 0;
+#endif
+#ifdef YLT_ENABLE_URMA
+  std::optional<coro_io::urma_socket_t::config_t> urma_config_;
 #endif
 
   std::function<bool(const asio::ip::tcp::endpoint &)> client_filter_;

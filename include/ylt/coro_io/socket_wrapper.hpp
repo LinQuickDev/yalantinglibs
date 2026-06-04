@@ -20,6 +20,9 @@
 #include "ibverbs/ib_io.hpp"
 #include "ibverbs/ib_socket.hpp"
 #endif
+#ifdef YLT_ENABLE_URMA
+#include "urma/urma_socket.hpp"
+#endif
 #include "io_context_pool.hpp"
 namespace coro_io {
 struct socket_wrapper_t {
@@ -49,6 +52,15 @@ struct socket_wrapper_t {
       : executor_(executor),
         ib_socket_(std::make_unique<ib_socket_t>(executor_, config)) {
     ib_socket_->prepare_accpet(std::move(soc));
+  }
+#endif
+#ifdef YLT_ENABLE_URMA
+  socket_wrapper_t(asio::ip::tcp::socket &&soc,
+                   coro_io::ExecutorWrapper<> *executor,
+                   const coro_io::urma_socket_t::config_t &config)
+      : executor_(executor),
+        urma_socket_(std::make_unique<urma_socket_t>(executor_, config)) {
+    urma_socket_->prepare_accept(std::move(soc));
   }
 #endif
   void init_tcp_socket() {
@@ -114,6 +126,24 @@ struct socket_wrapper_t {
     return true;
   }
 #endif
+#ifdef YLT_ENABLE_URMA
+  bool init_client(const coro_io::urma_socket_t::config_t &config) {
+    try {
+      init_tcp_socket();
+      if (urma_socket_) {
+        *urma_socket_ = urma_socket_t(executor_, config);
+      }
+      else {
+        urma_socket_ = std::make_unique<urma_socket_t>(executor_, config);
+      }
+    } catch (const std::exception &e) {
+      ELOG_WARN << "init urma client failed:" << e.what();
+      init_ok_ = false;
+      return false;
+    }
+    return true;
+  }
+#endif
 
   void set_local_ip(const std::string &local_ip) { local_ip_ = local_ip; }
 
@@ -127,6 +157,9 @@ struct socket_wrapper_t {
 
 #ifdef YLT_ENABLE_IBV
   std::unique_ptr<ib_socket_t> ib_socket_;
+#endif
+#ifdef YLT_ENABLE_URMA
+  std::unique_ptr<urma_socket_t> urma_socket_;
 #endif
   bool init_ok_ = true;
 
@@ -143,6 +176,11 @@ struct socket_wrapper_t {
 #ifdef YLT_ENABLE_IBV
     if (ib_socket_) {
       return op(*ib_socket_);
+    }
+#endif
+#ifdef YLT_ENABLE_URMA
+    if (urma_socket_) {
+      return op(*urma_socket_);
     }
 #endif
 #ifdef YLT_ENABLE_SSL
@@ -163,6 +201,12 @@ struct socket_wrapper_t {
       return;
     }
 #endif
+#ifdef YLT_ENABLE_URMA
+    if (urma_socket_) {
+      urma_socket_->close();
+      return;
+    }
+#endif
     if (socket_) {
       socket_->shutdown(asio::ip::tcp::socket::shutdown_both, ignored_ec);
       socket_->close(ignored_ec);
@@ -176,6 +220,13 @@ struct socket_wrapper_t {
               coro_io::endpoint::rdma};
     }
 #endif
+#ifdef YLT_ENABLE_URMA
+    if (urma_socket_) {
+      return {urma_socket_->get_remote_address(),
+              urma_socket_->get_remote_qp_num(),
+              coro_io::endpoint::rdma};
+    }
+#endif
 
     return {socket_->remote_endpoint().address(),
             socket_->remote_endpoint().port(), coro_io::endpoint::tcp};
@@ -184,6 +235,13 @@ struct socket_wrapper_t {
 #ifdef YLT_ENABLE_IBV
     if (ib_socket_) {
       return {ib_socket_->get_local_address(), ib_socket_->get_local_qp_num(),
+              coro_io::endpoint::rdma};
+    }
+#endif
+#ifdef YLT_ENABLE_URMA
+    if (urma_socket_) {
+      return {urma_socket_->get_local_address(),
+              urma_socket_->get_local_qp_num(),
               coro_io::endpoint::rdma};
     }
 #endif
@@ -207,6 +265,9 @@ struct socket_wrapper_t {
 #endif
 #ifdef YLT_ENABLE_IBV
   using ibv_socket_t = coro_io::ib_socket_t;
+#endif
+#ifdef YLT_ENABLE_URMA
+  using urma_socket_type = coro_io::urma_socket_t;
 #endif
 };
 }  // namespace coro_io
