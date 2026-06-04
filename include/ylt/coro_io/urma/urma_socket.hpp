@@ -30,13 +30,11 @@
 #include "async_simple/coro/Lazy.h"
 #include "async_simple/util/move_only_function.h"
 #include "ylt/coro_io/coro_io.hpp"
+#include "ylt/coro_io/detail/circle_buffer.hpp"
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack.hpp"
 #include "ylt/urma/urma_api.h"
 #include "ylt/urma/urma_types.h"
-
-
-enum class urma_transport_type_t : int;
 
 #define URMA_EID_LEN 16
 
@@ -44,44 +42,6 @@ namespace coro_io {
 namespace detail {
 
 struct urma_socket_shared_state_t;
-
-template <typename T>
-struct circle_buffer {
-  std::vector<T> queue;
-  uint32_t front_ = 0, end_ = 0;
-  bool may_empty = true;
-  circle_buffer(uint32_t size) {
-    assert(size > 0);
-    queue.resize(size);
-  }
-  void push(T&& elem) {
-    assert(!full());
-    may_empty = false;
-    end_ = (end_ + 1) % queue.size();
-    queue[end_] = std::move(elem);
-  }
-  T pop() {
-    assert(!empty());
-    front_ = (front_ + 1) % queue.size();
-    may_empty = true;
-    return std::move(queue[front_]);
-  }
-  T& back() { return queue[end_]; }
-  T& front() { return queue[(front_ + 1) % queue.size()]; }
-  bool full() const noexcept { return end_ == front_ && !may_empty; }
-  bool empty() const noexcept { return end_ == front_ && may_empty; }
-  std::size_t size() const noexcept {
-    if (front_ > end_) {
-      return queue.size() + end_ - front_;
-    }
-    else if (front_ == end_) {
-      return empty() ? 0 : queue.size();
-    }
-    else {
-      return end_ - front_;
-    }
-  }
-};
 
 // URMA-specific buffer representation (compatible with ibv_sge layout)
 struct urma_sge {

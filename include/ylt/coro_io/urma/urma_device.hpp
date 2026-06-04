@@ -34,7 +34,7 @@ struct urma_init_attr_t;
 #define URMA_EID_SIZE 16
 
 #ifdef YLT_ENABLE_URMA
-#include <urma_api.h>
+#include "ylt/urma/urma_api.h"
 #endif
 
 namespace coro_io {
