@@ -248,20 +248,27 @@ inline bool urma_socket_shared_state_t::init(
   send_buffer_cnt_ = send_buffer_cnt;
   buffer_size_ = buffer_size;
 
-  // Create JFC (Completion Channel)
+  // Create JFC (Completion Channel) - polling mode (jfce = nullptr)
   urma_jfc_cfg_t jfc_cfg = {};
-  jfc_cfg.comp_type = URMA_CQ_TYPE_JFC;
-  jfc_cfg.queue_size = 64;
+  jfc_cfg.depth = 64;
+  jfc_cfg.flag.value = 0;
+  jfc_cfg.jfce = nullptr;  // polling mode
+  jfc_cfg.user_ctx = 0;
   jfc_ = urma_create_jfc(ctx, &jfc_cfg);
   if (!jfc_) {
     ELOG_ERROR << "Failed to create JFC";
     return false;
   }
 
-  // Create JFR (Receive Queue)
+  // Create JFR (Receive Queue) for CTP mode
   urma_jfr_cfg_t jfr_cfg = {};
+  jfr_cfg.depth = static_cast<uint32_t>(recv_buffer_cnt);
+  jfr_cfg.flag.value = 0;
+  jfr_cfg.trans_mode = URMA_TM_RM;  // CTP uses RM mode
+  jfr_cfg.max_sge = 1;
+  jfr_cfg.min_rnr_timer = 12;  // typical value
   jfr_cfg.jfc = jfc_;
-  jfr_cfg.queue_size = static_cast<uint32_t>(recv_buffer_cnt);
+  jfr_cfg.token_value = {};  // empty token
   jfr_ = urma_create_jfr(ctx, &jfr_cfg);
   if (!jfr_) {
     ELOG_ERROR << "Failed to create JFR";
@@ -270,9 +277,12 @@ inline bool urma_socket_shared_state_t::init(
 
   // Create Jetty with shared JFR (CTP mode)
   urma_jetty_cfg_t jetty_cfg = {};
-  jetty_cfg.flag.bs.share_jfr = 1;
+  jetty_cfg.flag.bs.share_jfr = 1;  // CTP requires shared JFR
+  jetty_cfg.jfs_cfg.depth = static_cast<uint32_t>(send_buffer_cnt + 1);
+  jetty_cfg.jfs_cfg.flag.value = 0;
+  jetty_cfg.jfs_cfg.trans_mode = URMA_TM_RM;  // CTP uses RM mode
   jetty_cfg.jfs_cfg.jfc = jfc_;
-  jetty_cfg.jfs_cfg.queue_size = static_cast<uint32_t>(send_buffer_cnt);
+  jetty_cfg.jfs_cfg.user_ctx = 0;
   jetty_cfg.shared.jfr = jfr_;
   jetty_ = urma_create_jetty(ctx, &jetty_cfg);
   if (!jetty_) {
@@ -286,7 +296,10 @@ inline bool urma_socket_shared_state_t::init(
   new (&recv_result_) circle_buffer<std::pair<std::error_code, std::size_t>>(recv_buffer_cnt);
   new (&send_cb_) circle_buffer<callback_t>(send_buffer_cnt + 2);
 
-  ELOG_INFO << "URMA CTP socket initialized, Jetty ID: " << urma_get_jetty_id(jetty_);
+  // Get Jetty ID for connection establishment
+  urma_jetty_attr_t jetty_attr = {};
+  urma_query_jetty(jetty_, nullptr, &jetty_attr);
+  ELOG_INFO << "URMA CTP socket initialized, Jetty ID: " << jetty_attr.jetty_id.jetty_id;
   return true;
 }
 
