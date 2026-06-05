@@ -61,6 +61,13 @@ struct urma_buf_t {
 using callback_t = async_simple::util::move_only_function<void(
     std::pair<std::error_code, std::size_t>)>;
 
+// URMA resource deleter - RAII for URMA resources
+struct urma_deleter {
+  void operator()(urma_jfc_t* jfc) { if (jfc) urma_delete_jfc(jfc); }
+  void operator()(urma_jfr_t* jfr) { if (jfr) urma_delete_jfr(jfr); }
+  void operator()(urma_jetty_t* jetty) { if (jetty) urma_delete_jetty(jetty); }
+};
+
 // URMA CTP Socket state
 struct urma_socket_shared_state_t
     : public std::enable_shared_from_this<urma_socket_shared_state_t> {
@@ -75,11 +82,11 @@ struct urma_socket_shared_state_t
   coro_io::ExecutorWrapper<>* executor_;
   asio::ip::tcp::socket soc_;
 
-  // URMA resources
+  // URMA resources with RAII deletion
   urma_context_t* urma_context_ = nullptr;
-  urma_jfc_t* jfc_ = nullptr;
-  urma_jfr_t* jfr_ = nullptr;
-  urma_jetty_t* jetty_ = nullptr;
+  std::unique_ptr<urma_jfc_t, urma_deleter> jfc_;
+  std::unique_ptr<urma_jfr_t, urma_deleter> jfr_;
+  std::unique_ptr<urma_jetty_t, urma_deleter> jetty_;
   urma_target_jetty_t* remote_jetty_ = nullptr;
 
   // Buffer management
@@ -158,6 +165,42 @@ struct urma_socket_shared_state_t
       promise->setValue(ec);
     }
   }
+
+  // Graceful shutdown - notify peer and wait for completion
+  async_simple::coro::Lazy<void> shutdown() {
+    ELOG_TRACE << "URMA shutdown: starting graceful close, Jetty ID=" << (jetty_ ? jetty_->jetty_id.id : 0);
+
+    // Send close notification to peer if we have a remote jetty
+    if (remote_jetty_ && !has_close_.load()) {
+      // Send an empty message to notify peer of shutdown
+      urma_sge_t sge = {};
+      urma_sg_t src_sg;
+      src_sg.sge = &sge;
+      src_sg.num_sge = 0;  // Empty send to signal close
+
+      urma_send_wr_t send_wr = {};
+      send_wr.src = src_sg;
+
+      urma_jfs_wr_t jfs_wr = {};
+      jfs_wr.opcode = URMA_OPC_SEND;
+      jfs_wr.send = send_wr;
+      jfs_wr.tjetty = remote_jetty_;
+      jfs_wr.user_ctx = 0;
+
+      urma_jfs_wr* bad_wr = nullptr;
+      auto status = urma_post_jetty_send_wr(jetty_.get(), &jfs_wr, &bad_wr);
+      if (status != 0) [[unlikely]] {
+        ELOG_WARN << "URMA shutdown: failed to send close notification, status=" << status;
+      } else {
+        // Wait for the send to complete or timeout
+        ELOG_TRACE << "URMA shutdown: waiting for close notification to complete";
+        co_await coro_io::sleep_for(std::chrono::seconds{1}, executor_);
+      }
+    }
+
+    ELOG_TRACE << "URMA shutdown: finished graceful close";
+    co_return;
+  }
 };
 
 }  // namespace detail
@@ -194,6 +237,9 @@ class urma_socket_t {
   urma_socket_t& operator=(urma_socket_t&&) = default;
   ~urma_socket_t() { close(); }
 
+  // Initialize URMA resources - called by constructors
+  void init(const config_t& config);
+
   bool is_open() const noexcept {
     return state_ != nullptr && !state_->has_close_;
   }
@@ -221,6 +267,9 @@ class urma_socket_t {
 
   async_simple::coro::Lazy<std::error_code> accept() noexcept;
   void prepare_accept(asio::ip::tcp::socket soc) noexcept;
+
+  // Graceful shutdown - sends close notification to peer and waits for completion
+  async_simple::coro::Lazy<void> shutdown() noexcept;
 
   void close() noexcept;
 
@@ -311,6 +360,7 @@ class urma_socket_t {
   std::string remote_address_;
   std::string_view remain_data_;
   std::unique_ptr<detail::urma_socket_shared_state_t> state_;
+  coro_io::ExecutorWrapper<>* executor_ = nullptr;
 };
 
 // Helper function to convert EID to address string
@@ -345,11 +395,12 @@ inline bool urma_socket_shared_state_t::init(
   jfc_cfg.flag.value = 0;
   jfc_cfg.jfce = nullptr;  // polling mode
   jfc_cfg.user_ctx = 0;
-  jfc_ = urma_create_jfc(ctx, &jfc_cfg);
-  if (!jfc_) {
+  auto* raw_jfc = urma_create_jfc(ctx, &jfc_cfg);
+  if (!raw_jfc) {
     ELOG_ERROR << "Failed to create JFC";
     return false;
   }
+  jfc_.reset(raw_jfc);  // Take ownership with unique_ptr
 
   // Create JFR (Receive Queue) for CTP mode
   urma_jfr_cfg_t jfr_cfg = {};
@@ -358,13 +409,14 @@ inline bool urma_socket_shared_state_t::init(
   jfr_cfg.trans_mode = URMA_TM_RM;  // CTP uses RM mode
   jfr_cfg.max_sge = 1;
   jfr_cfg.min_rnr_timer = 12;  // typical value
-  jfr_cfg.jfc = jfc_;
+  jfr_cfg.jfc = raw_jfc;  // Use raw pointer for JFR config
   jfr_cfg.token_value = {};  // empty token
-  jfr_ = urma_create_jfr(ctx, &jfr_cfg);
-  if (!jfr_) {
+  auto* raw_jfr = urma_create_jfr(ctx, &jfr_cfg);
+  if (!raw_jfr) {
     ELOG_ERROR << "Failed to create JFR";
     return false;
   }
+  jfr_.reset(raw_jfr);  // Take ownership with unique_ptr
 
   // Create Jetty with shared JFR (CTP mode)
   urma_jetty_cfg_t jetty_cfg = {};
@@ -372,14 +424,15 @@ inline bool urma_socket_shared_state_t::init(
   jetty_cfg.jfs_cfg.depth = static_cast<uint32_t>(send_buffer_cnt + 1);
   jetty_cfg.jfs_cfg.flag.value = 0;
   jetty_cfg.jfs_cfg.trans_mode = URMA_TM_RM;  // CTP uses RM mode
-  jetty_cfg.jfs_cfg.jfc = jfc_;
+  jetty_cfg.jfs_cfg.jfc = jfc_.get();  // Pass raw pointer to JFC
   jetty_cfg.jfs_cfg.user_ctx = 0;
-  jetty_cfg.shared.jfr = jfr_;
-  jetty_ = urma_create_jetty(ctx, &jetty_cfg);
-  if (!jetty_) {
+  jetty_cfg.shared.jfr = jfr_.get();  // Pass raw pointer to JFR
+  auto* raw_jetty = urma_create_jetty(ctx, &jetty_cfg);
+  if (!raw_jetty) {
     ELOG_ERROR << "Failed to create Jetty";
     return false;
   }
+  jetty_.reset(raw_jetty);  // Take ownership with unique_ptr
 
   // Initialize buffers
   new (&recv_queue_) circle_buffer<urma_buf_t>(recv_buffer_cnt);
@@ -403,18 +456,10 @@ inline void urma_socket_shared_state_t::close() {
     return;
   }
 
-  if (jetty_) {
-    urma_delete_jetty(jetty_);
-    jetty_ = nullptr;
-  }
-  if (jfr_) {
-    urma_delete_jfr(jfr_);
-    jfr_ = nullptr;
-  }
-  if (jfc_) {
-    urma_delete_jfc(jfc_);
-    jfc_ = nullptr;
-  }
+  // unique_ptr with urma_deleter will automatically call urma_delete_xxx
+  jetty_.reset();
+  jfr_.reset();
+  jfc_.reset();
 }
 
 inline urma_buf_t urma_socket_shared_state_t::register_buffer(void* addr, size_t len) {
@@ -490,7 +535,7 @@ inline void urma_socket_shared_state_t::post_send_impl(urma_buf_t buf, callback_
   jfs_wr.user_ctx = reinterpret_cast<uint64_t>(new callback_t(std::move(handler)));
 
   urma_jfs_wr* bad_wr = nullptr;
-  auto status = urma_post_jetty_send_wr(jetty_, &jfs_wr, &bad_wr);
+  auto status = urma_post_jetty_send_wr(jetty_.get(), &jfs_wr, &bad_wr);
   if (status != 0) [[unlikely]] {
     delete reinterpret_cast<callback_t*>(jfs_wr.user_ctx);
     auto err_code = std::make_error_code(std::errc{std::abs(status)});
@@ -504,7 +549,7 @@ inline void urma_socket_shared_state_t::post_send_impl(urma_buf_t buf, callback_
 
 inline std::error_code urma_socket_shared_state_t::poll_completion() {
   urma_cr_t cr_list[8];
-  int num_completed = urma_poll_jfc(jfc_, 8, cr_list);
+  int num_completed = urma_poll_jfc(jfc_.get(), 8, cr_list);
   ELOG_TRACE << "URMA poll: num_completed=" << num_completed;
 
   if (num_completed < 0) [[unlikely]] {
@@ -548,14 +593,18 @@ inline std::error_code urma_socket_shared_state_t::poll_completion() {
 
 // urma_socket_t implementation
 
-inline urma_socket_t::urma_socket_t(const config_t& config)
-    : conf_(config), buffer_size_(config.buffer_size) {}
-
 inline void urma_socket_t::close() noexcept {
   if (state_) {
     state_->close();
     state_.reset();
   }
+}
+
+inline async_simple::coro::Lazy<void> urma_socket_t::shutdown() noexcept {
+  if (state_) {
+    co_await state_->shutdown();
+  }
+  co_return;
 }
 
 inline async_simple::coro::Lazy<std::error_code> urma_socket_t::connect(
@@ -781,21 +830,46 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::accept() noexcep
 inline urma_socket_t::urma_socket_t(ExecutorWrapper<>* executor, const config_t& config)
     : conf_(config), buffer_size_(config.buffer_size) {
   ELOG_DEBUG << "urma_socket_t(executor, config): executor=" << executor << " buffer_size=" << config.buffer_size;
-  if (!executor) {
-    ELOG_ERROR << "URMA urma_socket_t: executor is nullptr";
-    return;
+  executor_ = executor;
+  init(config);  // Initialize URMA resources in constructor like IBverbs
+}
+
+inline urma_socket_t::urma_socket_t(const config_t& config)
+    : conf_(config), buffer_size_(config.buffer_size) {
+  executor_ = coro_io::get_global_executor();
+  init(config);  // Initialize URMA resources in constructor like IBverbs
+}
+
+inline void urma_socket_t::init(const config_t& config) {
+  conf_ = config;
+  if (executor_ == nullptr) {
+    executor_ = coro_io::get_global_executor();
   }
-  auto exec = static_cast<coro_io::ExecutorWrapper<>*>(executor->checkout());
+  auto exec = static_cast<coro_io::ExecutorWrapper<>*>(executor_->checkout());
   if (!exec) {
-    ELOG_ERROR << "URMA urma_socket_t: checkout() returned nullptr";
+    ELOG_ERROR << "URMA init: checkout() returned nullptr";
     return;
   }
-  ELOG_DEBUG << "urma_socket_t: exec=" << exec;
-  auto asio_exec = exec->get_asio_executor();
-  ELOG_DEBUG << "urma_socket_t: asio_exec obtained, calling make_unique";
-  state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec, asio_exec);
-  ELOG_DEBUG << "after make unique in urma_socket_t";
-  state_->executor_ = exec;
+
+  // Get global URMA device
+  auto device = get_global_urma_device();
+  if (!device || !device->is_valid()) {
+    ELOG_ERROR << "URMA init: no valid URMA device";
+    return;
+  }
+
+  // Create state and initialize URMA resources
+  state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
+  if (!state_->init(device->context(),
+                    exec,
+                    conf_.recv_buffer_cnt,
+                    conf_.send_buffer_cnt,
+                    conf_.buffer_size)) {
+    ELOG_ERROR << "URMA init: failed to initialize URMA resources";
+    state_.reset();
+    return;
+  }
+  ELOG_DEBUG << "URMA init: successfully initialized";
 }
 
 inline void urma_socket_t::prepare_accept(asio::ip::tcp::socket soc) noexcept {
