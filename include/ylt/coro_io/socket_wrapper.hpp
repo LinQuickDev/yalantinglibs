@@ -131,11 +131,16 @@ struct socket_wrapper_t {
     ELOG_DEBUG << "URMA init_client: executor_=" << executor_;
     try {
       init_tcp_socket();
+      ELOG_DEBUG << "after init tcp socket" << executor_;
       if (urma_socket_) {
+        ELOG_DEBUG << "have urma_socket_" << executor_;
         *urma_socket_ = urma_socket_t(executor_, config);
+        ELOG_DEBUG << "after have urma_socket_" << executor_;
       }
       else {
+        ELOG_DEBUG << "Before make unique" << executor_;
         urma_socket_ = std::make_unique<urma_socket_t>(executor_, config);
+        ELOG_DEBUG << "After make unique" << executor_;
       }
     } catch (const std::exception &e) {
       ELOG_WARN << "init urma client failed:" << e.what();
