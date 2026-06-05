@@ -789,7 +789,7 @@ inline urma_socket_t::urma_socket_t(ExecutorWrapper<>* executor, const config_t&
   auto asio_exec = exec->get_asio_executor();
   ELOG_DEBUG << "urma_socket_t: asio_exec obtained, calling make_unique";
   state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
-  ELOG_DEBUG << "after make unique in urma_socket_t"
+  ELOG_DEBUG << "after make unique in urma_socket_t";
   state_->executor_ = exec;
 }
 
