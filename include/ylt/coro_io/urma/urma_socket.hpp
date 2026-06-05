@@ -785,6 +785,7 @@ inline urma_socket_t::urma_socket_t(ExecutorWrapper<>* executor, const config_t&
     ELOG_ERROR << "URMA urma_socket_t: checkout() returned nullptr";
     return;
   }
+  ELOG_DEBUG << "urma_socket_t: exec=" << exec << " asio_executor=" << exec->get_asio_executor().target_id();
   state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
   state_->executor_ = exec;
 }
