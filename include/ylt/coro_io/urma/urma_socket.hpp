@@ -207,6 +207,11 @@ class urma_socket_t {
   async_simple::coro::Lazy<std::error_code> connect(
       const std::string& addr, const std::string& port);
 
+  // Connect with endpoint sequence (for coro_rpc compatibility)
+  template <typename EndPointSeq>
+  async_simple::coro::Lazy<std::error_code> connect(
+      const EndPointSeq& endpoint) noexcept;
+
   async_simple::coro::Lazy<std::error_code> accept() noexcept;
   void prepare_accept(asio::ip::tcp::socket soc) noexcept;
 
@@ -610,6 +615,82 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::connect(
   state_->remote_jetty_id_ = peer_info.jetty_id;
 
   ELOG_INFO << "Connected to URMA peer, Jetty ID: " << peer_info.jetty_id;
+  co_return std::error_code{};
+}
+
+template <typename EndPointSeq>
+inline async_simple::coro::Lazy<std::error_code> urma_socket_t::connect(
+    const EndPointSeq& endpoint) noexcept {
+  // Get executor via CurrentExecutor
+  auto executor = co_await async_simple::CurrentExecutor{};
+  if (!executor) {
+    co_return std::make_error_code(std::errc::operation_not_supported);
+  }
+
+  auto exec = static_cast<coro_io::ExecutorWrapper<>*>(executor->checkout());
+  state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
+  state_->executor_ = exec;
+
+  // Get global URMA device
+  auto device = get_global_urma_device();
+  if (!device || !device->is_valid()) {
+    co_return std::make_error_code(std::errc::network_unreachable);
+  }
+
+  // Initialize URMA resources
+  if (!state_->init(device->context(),
+                    state_->executor_,
+                    conf_.recv_buffer_cnt,
+                    conf_.send_buffer_cnt,
+                    conf_.buffer_size)) {
+    state_.reset();
+    co_return std::make_error_code(std::errc::operation_not_supported);
+  }
+
+  // TCP handshake for connection establishment using coro_io async_connect
+  auto ec = co_await coro_io::async_connect(state_->socket(), endpoint);
+  if (ec) [[unlikely]] {
+    co_return ec;
+  }
+
+  // Exchange socket info
+  urma_socket_info local_info{};
+  local_info.jetty_id = state_->jetty_->jetty_id.id;
+  local_info.buffer_size = conf_.buffer_size;
+  auto& local_eid = device->eid();
+  std::memcpy(local_info.eid, local_eid.raw, URMA_EID_LEN);
+
+  // Send our info
+  char buffer[sizeof(urma_socket_info)];
+  std::memcpy(buffer, &local_info, sizeof(local_info));
+  co_await async_write(*state_->soc_, asio::buffer(buffer));
+
+  // Receive peer info
+  urma_socket_info peer_info;
+  auto [ec2, _] = co_await async_read(*state_->soc_, asio::buffer(buffer, sizeof(buffer)));
+  if (ec2) [[unlikely]] {
+    co_return ec2;
+  }
+  std::memcpy(&peer_info, buffer, sizeof(peer_info));
+
+  // Import remote jetty
+  urma_rjetty_t remote_jetty_id = {};
+  remote_jetty_id.jetty_id.id = peer_info.jetty_id;
+  remote_jetty_id.jetty_id.eid = *reinterpret_cast<urma_eid_t*>(peer_info.eid);
+  remote_jetty_id.trans_mode = URMA_TM_RM;
+  remote_jetty_id.type = URMA_JETTY;
+  remote_jetty_id.tp_type = URMA_CTP;  // CTP mode
+  remote_jetty_id.flag.value = 0;
+
+  state_->remote_jetty_ = urma_import_jetty(state_->urma_context_, &remote_jetty_id, nullptr);
+  if (!state_->remote_jetty_) {
+    co_return std::make_error_code(std::errc::operation_not_supported);
+  }
+
+  remote_address_ = eid_to_address(peer_info.eid);
+  state_->remote_jetty_id_ = peer_info.jetty_id;
+
+  ELOG_INFO << "Connected to URMA peer via endpoint, Jetty ID: " << peer_info.jetty_id;
   co_return std::error_code{};
 }
 

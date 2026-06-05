@@ -77,7 +77,7 @@ remote.jetty_id.eid = peer_eid;
 remote.jetty_id.id = peer_jetty_id;
 remote.trans_mode = URMA_TM_RM;
 remote.type = URMA_JETTY;
-remote.tp_type = URMA_RTP;  // or URMA_CTP
+remote.tp_type = URMA_CTP;  // or URMA_RTP
 urma_target_jetty_t* remote_tjetty = urma_import_jetty(ctx, &remote, nullptr);
 ```
 
