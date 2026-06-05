@@ -536,6 +536,15 @@ inline async_simple::coro::Lazy<std::error_code> async_connect(
   co_return result;
 }
 
+#ifdef YLT_ENABLE_URMA
+class urma_socket_t;
+
+template <typename EndPointSeq>
+inline async_simple::coro::Lazy<std::error_code> async_connect(
+    urma_socket_t &socket, const EndPointSeq &endpoint) noexcept;
+
+#endif
+
 template <typename executor_t>
 inline async_simple::coro::Lazy<
     std::pair<std::error_code, asio::ip::tcp::resolver::iterator>>
@@ -612,6 +621,16 @@ inline async_simple::coro::Lazy<std::error_code> async_connect(
   co_return ec;
 }
 #endif
+
+#ifdef YLT_ENABLE_URMA
+class urma_socket_t;
+
+template <typename EndPointSeq>
+inline async_simple::coro::Lazy<std::error_code> async_connect(
+    urma_socket_t &socket, const EndPointSeq &endpoint) noexcept;
+
+#endif
+
 class period_timer : public asio::steady_timer {
  public:
   using asio::steady_timer::steady_timer;
@@ -846,5 +865,13 @@ struct endpoint {
 inline std::ostream &operator<<(std::ostream &stream, const endpoint &ep) {
   return stream << ep.address.to_string() << ":" << ep.port;
 }
+
+#ifdef YLT_ENABLE_URMA
+template <typename EndPointSeq>
+inline async_simple::coro::Lazy<std::error_code> async_connect(
+    urma_socket_t &socket, const EndPointSeq &endpoint) noexcept {
+  return async_connect(socket.next_layer(), endpoint);
+}
+#endif
 
 }  // namespace coro_io

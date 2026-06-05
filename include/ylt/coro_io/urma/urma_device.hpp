@@ -75,7 +75,7 @@ class urma_device_manager {
  public:
   static urma_device_manager& instance();
   bool init();
-  std::shared_ptr<urma_device_wrapper_t> get_device(const std::string& device_name = "");
+  std::shared_ptr<urma_device_wrapper_t> get_device(const std::string& device_name = "", int eid_index = 0);
   std::vector<std::shared_ptr<urma_device_wrapper_t>> get_all_devices();
   std::shared_ptr<urma_device_wrapper_t> get_global_device();
 
@@ -87,8 +87,27 @@ class urma_device_manager {
   std::shared_ptr<urma_device_wrapper_t> global_device_;
 };
 
+// URMA buffer pool configuration
+struct urma_buffer_pool_config_t {
+  uint32_t buffer_size = 256 * 1024;           // buffer size
+  uint64_t max_memory_usage = 20 * 1024 * 1024;  // max memory usage
+  std::chrono::seconds idle_timeout{5};        // idle timeout
+};
+
+// URMA initialization configuration
+struct urma_init_config_t {
+  std::string dev_name;                        // device name, empty for auto-select
+  urma_buffer_pool_config_t buffer_pool_config;  // buffer pool config
+  int eid_index = 0;                           // EID index to use
+};
+
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device() {
   return urma_device_manager::instance().get_global_device();
+}
+
+inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
+    const urma_init_config_t& config) {
+  return urma_device_manager::instance().get_device(config.dev_name, config.eid_index);
 }
 
 // ============= Implementation (inline in header) =============
@@ -224,7 +243,7 @@ inline bool urma_device_manager::init() {
 }
 
 inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
-    const std::string& device_name) {
+    const std::string& device_name, int eid_index) {
 #ifdef YLT_ENABLE_URMA
   if (!initialized_) init();
 

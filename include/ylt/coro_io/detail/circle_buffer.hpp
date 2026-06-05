@@ -28,6 +28,7 @@ struct circle_buffer {
   std::vector<T> queue;
   uint32_t front_ = 0, end_ = 0;
   bool may_empty = true;
+  circle_buffer() = default;
   circle_buffer(uint32_t size) {
     assert(size > 0);
     queue.resize(size);
