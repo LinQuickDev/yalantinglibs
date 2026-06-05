@@ -380,6 +380,22 @@ inline bool urma_socket_shared_state_t::init(
     std::size_t recv_buffer_cnt,
     std::size_t send_buffer_cnt,
     uint32_t buffer_size) {
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: starting";
+  ELOG_DEBUG << "  - ctx=" << ctx;
+  ELOG_DEBUG << "  - executor=" << executor;
+  ELOG_DEBUG << "  - recv_buffer_cnt=" << recv_buffer_cnt;
+  ELOG_DEBUG << "  - send_buffer_cnt=" << send_buffer_cnt;
+  ELOG_DEBUG << "  - buffer_size=" << buffer_size;
+
+  if (!ctx) {
+    ELOG_ERROR << "urma_socket_shared_state_t::init: ctx is nullptr!";
+    return false;
+  }
+  if (!executor) {
+    ELOG_ERROR << "urma_socket_shared_state_t::init: executor is nullptr!";
+    return false;
+  }
+
   urma_context_ = ctx;
   executor_ = executor;
   recv_buffer_cnt_ = recv_buffer_cnt;
@@ -387,22 +403,29 @@ inline bool urma_socket_shared_state_t::init(
   buffer_size_ = buffer_size;
 
   // Initialize socket with executor
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: creating TCP socket";
   soc_ = asio::ip::tcp::socket(executor->get_asio_executor());
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: TCP socket created";
 
   // Create JFC (Completion Channel) - polling mode (jfce = nullptr)
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: creating JFC with depth=64";
   urma_jfc_cfg_t jfc_cfg = {};
   jfc_cfg.depth = 64;
   jfc_cfg.flag.value = 0;
   jfc_cfg.jfce = nullptr;  // polling mode
   jfc_cfg.user_ctx = 0;
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: calling urma_create_jfc";
   auto* raw_jfc = urma_create_jfc(ctx, &jfc_cfg);
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: urma_create_jfc returned raw_jfc=" << raw_jfc;
   if (!raw_jfc) {
-    ELOG_ERROR << "Failed to create JFC";
+    ELOG_ERROR << "urma_socket_shared_state_t::init: Failed to create JFC";
     return false;
   }
   jfc_.reset(raw_jfc);  // Take ownership with unique_ptr
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: JFC created successfully";
 
   // Create JFR (Receive Queue) for CTP mode
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: creating JFR with depth=" << recv_buffer_cnt;
   urma_jfr_cfg_t jfr_cfg = {};
   jfr_cfg.depth = static_cast<uint32_t>(recv_buffer_cnt);
   jfr_cfg.flag.value = 0;
@@ -411,14 +434,18 @@ inline bool urma_socket_shared_state_t::init(
   jfr_cfg.min_rnr_timer = 12;  // typical value
   jfr_cfg.jfc = raw_jfc;  // Use raw pointer for JFR config
   jfr_cfg.token_value = {};  // empty token
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: calling urma_create_jfr";
   auto* raw_jfr = urma_create_jfr(ctx, &jfr_cfg);
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: urma_create_jfr returned raw_jfr=" << raw_jfr;
   if (!raw_jfr) {
-    ELOG_ERROR << "Failed to create JFR";
+    ELOG_ERROR << "urma_socket_shared_state_t::init: Failed to create JFR";
     return false;
   }
   jfr_.reset(raw_jfr);  // Take ownership with unique_ptr
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: JFR created successfully";
 
   // Create Jetty with shared JFR (CTP mode)
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: creating Jetty with shared JFR";
   urma_jetty_cfg_t jetty_cfg = {};
   jetty_cfg.flag.bs.share_jfr = 1;  // CTP requires shared JFR
   jetty_cfg.jfs_cfg.depth = static_cast<uint32_t>(send_buffer_cnt + 1);
@@ -427,14 +454,18 @@ inline bool urma_socket_shared_state_t::init(
   jetty_cfg.jfs_cfg.jfc = jfc_.get();  // Pass raw pointer to JFC
   jetty_cfg.jfs_cfg.user_ctx = 0;
   jetty_cfg.shared.jfr = jfr_.get();  // Pass raw pointer to JFR
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: calling urma_create_jetty";
   auto* raw_jetty = urma_create_jetty(ctx, &jetty_cfg);
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: urma_create_jetty returned raw_jetty=" << raw_jetty;
   if (!raw_jetty) {
-    ELOG_ERROR << "Failed to create Jetty";
+    ELOG_ERROR << "urma_socket_shared_state_t::init: Failed to create Jetty";
     return false;
   }
   jetty_.reset(raw_jetty);  // Take ownership with unique_ptr
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: Jetty created successfully";
 
   // Initialize buffers
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: initializing buffers";
   new (&recv_queue_) circle_buffer<urma_buf_t>(recv_buffer_cnt);
   new (&send_queue_) circle_buffer<urma_buf_t>(send_buffer_cnt);
   new (&recv_result_) circle_buffer<std::pair<std::error_code, std::size_t>>(recv_buffer_cnt);
@@ -443,10 +474,11 @@ inline bool urma_socket_shared_state_t::init(
   // Get Jetty ID for connection establishment
   // Jetty ID is accessed directly from the jetty structure
   uint32_t jetty_id = jetty_->jetty_id.id;
-  ELOG_INFO << "URMA socket init: Jetty ID=" << jetty_id 
+  ELOG_INFO << "URMA socket init: Jetty ID=" << jetty_id
            << " buffer_size=" << buffer_size_
            << " recv_buffer_cnt=" << recv_buffer_cnt_
            << " send_buffer_cnt=" << send_buffer_cnt_;
+  ELOG_DEBUG << "urma_socket_shared_state_t::init: completed successfully";
   return true;
 }
 
@@ -853,10 +885,14 @@ inline void urma_socket_t::init(const config_t& config) {
 
   // Get global URMA device
   auto device = get_global_urma_device();
+  ELOG_DEBUG << "urma_socket_t::init: device=" << (device ? device->name() : "nullptr");
   if (!device || !device->is_valid()) {
     ELOG_ERROR << "URMA init: no valid URMA device";
     return;
   }
+
+  ELOG_DEBUG << "urma_socket_t::init: using device: " << device->name()
+             << ", eid=" << device->eid_string();
 
   // Create state and initialize URMA resources
   state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
