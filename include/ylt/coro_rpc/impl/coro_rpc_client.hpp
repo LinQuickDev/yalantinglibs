@@ -278,8 +278,11 @@ class coro_rpc_client {
       coro_io::ExecutorWrapper<>* executor = coro_io::get_global_executor(),
       config conf = {})
       : timer_(std::make_unique<coro_io::period_timer>(
-            executor->get_asio_executor())),
+            executor ? executor->get_asio_executor() : asio::io_context{}.get_executor())),
         control_(std::make_shared<control_t>(executor, false, conf.local_ip)) {
+    if (!executor) [[unlikely]] {
+      ELOG_ERROR << "coro_rpc_client: executor is nullptr";
+    }
     if (!init_config(conf)) [[unlikely]] {
       close();
     }
