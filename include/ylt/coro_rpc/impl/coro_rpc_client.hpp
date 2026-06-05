@@ -306,6 +306,9 @@ class coro_rpc_client {
 #ifdef YLT_ENABLE_URMA
   [[nodiscard]] bool init_socket_wrapper(
       const coro_io::urma_socket_t::config_t &config) {
+    ELOG_INFO << "URMA init_socket_wrapper: buffer_size=" << config.buffer_size
+             << " recv_buffer_cnt=" << config.recv_buffer_cnt
+             << " send_buffer_cnt=" << config.send_buffer_cnt;
     return control_->socket_wrapper_.init_client(config);
   }
 #endif
@@ -823,6 +826,7 @@ class coro_rpc_client {
 #ifdef YLT_ENABLE_URMA
   [[nodiscard]] bool init_urma(
       const coro_io::urma_socket_t::config_t &config = {}) {
+    ELOG_DEBUG << "URMA init_urma: buffer_size=" << config.buffer_size;
     config_.socket_config = config;
     return init_socket_wrapper(
         std::get<coro_io::urma_socket_t::config_t>(config_.socket_config));

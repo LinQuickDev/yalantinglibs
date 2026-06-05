@@ -383,11 +383,15 @@ inline bool urma_socket_shared_state_t::init(
   // Get Jetty ID for connection establishment
   // Jetty ID is accessed directly from the jetty structure
   uint32_t jetty_id = jetty_->jetty_id.id;
-  ELOG_INFO << "URMA CTP socket initialized, Jetty ID: " << jetty_id;
+  ELOG_INFO << "URMA socket init: Jetty ID=" << jetty_id 
+           << " buffer_size=" << buffer_size_
+           << " recv_buffer_cnt=" << recv_buffer_cnt_
+           << " send_buffer_cnt=" << send_buffer_cnt_;
   return true;
 }
 
 inline void urma_socket_shared_state_t::close() {
+  ELOG_DEBUG << "URMA socket close: Jetty ID=" << (jetty_ ? jetty_->jetty_id.id : 0);
   if (has_close_.exchange(true)) {
     return;
   }
@@ -436,6 +440,7 @@ inline void urma_socket_shared_state_t::unregister_buffer(urma_buf_t& buf) {
 }
 
 inline void urma_socket_shared_state_t::post_recv_impl(callback_t&& handler) {
+  ELOG_TRACE << "URMA post_recv: queue_size=" << recv_result_.size() << " closed=" << has_close_.load();
   if (!recv_result_.empty()) {
     auto result = recv_result_.pop();
     recv_buf_ = std::move(recv_queue_.pop());
@@ -443,6 +448,7 @@ inline void urma_socket_shared_state_t::post_recv_impl(callback_t&& handler) {
     return;
   }
   else if (has_close_) [[unlikely]] {
+    ELOG_WARN << "URMA post_recv: socket already closed";
     urma_socket_shared_state_t::resume(
         std::pair{std::make_error_code(std::errc::io_error), 0},
         std::move(handler));
@@ -453,11 +459,13 @@ inline void urma_socket_shared_state_t::post_recv_impl(callback_t&& handler) {
 
 inline void urma_socket_shared_state_t::post_send_impl(urma_buf_t buf, callback_t&& handler) {
   if (has_close_) [[unlikely]] {
+    ELOG_WARN << "URMA post_send: socket closed, buf_size=" << buf.length;
     urma_socket_shared_state_t::resume(
         std::pair{std::make_error_code(std::errc::operation_canceled), 0},
         std::move(handler));
     return;
   }
+  ELOG_TRACE << "URMA post_send: buf_size=" << buf.length << " remote_jetty_id=" << (remote_jetty_ ? remote_jetty_id_ : 0);
 
   // Build URMA SEND work request
   urma_sge_t sge = buf.to_sge();
@@ -490,6 +498,7 @@ inline void urma_socket_shared_state_t::post_send_impl(urma_buf_t buf, callback_
 inline std::error_code urma_socket_shared_state_t::poll_completion() {
   urma_cr_t cr_list[8];
   int num_completed = urma_poll_jfc(jfc_, 8, cr_list);
+  ELOG_TRACE << "URMA poll: num_completed=" << num_completed;
 
   if (num_completed < 0) [[unlikely]] {
     return std::make_error_code(std::errc::io_error);
@@ -778,5 +787,13 @@ inline void urma_socket_t::prepare_accept(asio::ip::tcp::socket soc) noexcept {
   }
   *state_->soc_ = std::move(soc);
 }
+#ifdef YLT_ENABLE_URMA
+template <typename EndPointSeq>
+inline async_simple::coro::Lazy<std::error_code> async_connect(
+    urma_socket_t &socket, const EndPointSeq &endpoint) noexcept {
+  return socket.connect(endpoint);
+}
+#endif
+
 
 }  // namespace coro_io

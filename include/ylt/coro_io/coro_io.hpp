@@ -536,16 +536,6 @@ inline async_simple::coro::Lazy<std::error_code> async_connect(
   co_return result;
 }
 
-#ifdef YLT_ENABLE_URMA
-class urma_socket_t;
-
-template <typename EndPointSeq>
-inline async_simple::coro::Lazy<std::error_code> async_connect(
-    urma_socket_t &socket, const EndPointSeq &endpoint) noexcept {
-  return socket.connect(endpoint);
-}
-#endif
-
 template <typename executor_t>
 inline async_simple::coro::Lazy<
     std::pair<std::error_code, asio::ip::tcp::resolver::iterator>>

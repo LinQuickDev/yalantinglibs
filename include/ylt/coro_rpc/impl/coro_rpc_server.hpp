@@ -576,11 +576,14 @@ class coro_rpc_server_base {
   async_simple::coro::Lazy<bool> update_to_urma(coro_connection *conn) {
     bool init_ok = true;
     auto &wrapper = conn->socket_wrapper();
+    ELOG_DEBUG << "URMA update_to_urma: conn_id=" << conn->get_connection_id()
+               << " remote=" << conn->get_remote_endpoint();
     try {
       wrapper = {std::move(*wrapper.socket()), wrapper.get_executor(),
                  urma_config_.value_or(coro_io::urma_socket_t::config_t{})};
+      ELOG_INFO << "URMA socket created for conn_id=" << conn->get_connection_id();
     } catch (...) {
-      ELOG_WARN << "init urma connection failed";
+      ELOG_WARN << "URMA init urma connection failed, conn_id=" << conn->get_connection_id();
       init_ok = false;
     }
     co_return init_ok;

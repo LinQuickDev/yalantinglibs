@@ -70,7 +70,7 @@ void basic_example() {
 void set_option() {
   /* init global device, should call before any other call */
   coro_io::get_global_urma_device(coro_io::urma_init_config_t{
-      .dev_name = "",  /*URMA device name, default is empty, which means choice
+      .dev_name = "bonding_dev_0",  /*URMA device name, default is empty, which means choice
                           the first URMA device*/
       .buffer_pool_config =
           {
@@ -86,10 +86,13 @@ void set_option() {
       .recv_buffer_cnt = 4,  // buffer cnt of recv queue
       .send_buffer_cnt = 4,   // buffer cnt of send queue
       .buffer_size = 256 * 1024,  // buffer size 256KB
-      .device_name = "",  // empty means auto-select
+      .device_name = "bonding_dev_0",  // empty means auto-select
       .eid_index = 0      // EID index
   };
-  client.init_urma(urma_config);
+  if (!client.init_urma(urma_config)) {
+    ELOG_ERROR << "URMA client init failed";
+    return;
+  }
 
   coro_rpc_server server;
   server.init_urma(urma_config);
