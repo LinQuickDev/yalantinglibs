@@ -102,11 +102,13 @@ struct urma_init_config_t {
 };
 
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device() {
+  ELOG_DEBUG << "get_global_urma_device() called";
   return urma_device_manager::instance().get_global_device();
 }
 
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
     const urma_init_config_t& config) {
+  ELOG_DEBUG << "get_global_urma_device(dev_name=" << config.dev_name << ", eid_index=" << config.eid_index << ") called";
   return urma_device_manager::instance().get_device(config.dev_name, config.eid_index);
 }
 
