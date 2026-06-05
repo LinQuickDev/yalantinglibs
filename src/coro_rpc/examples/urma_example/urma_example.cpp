@@ -144,7 +144,7 @@ void set_option() {
 }
 
 int main() {
-  easylog::logger<>::instance().set_min_severity(easylog::Severity::INFO);
+  easylog::logger<>::instance().set_min_severity(easylog::Severity::DEBUG);
   easylog::logger<>::instance().set_async(false);
   ELOG_INFO << "URMA example main started";
   set_option();

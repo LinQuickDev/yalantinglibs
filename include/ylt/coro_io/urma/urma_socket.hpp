@@ -105,7 +105,9 @@ struct urma_socket_shared_state_t
 
   urma_socket_shared_state_t() = default;
   urma_socket_shared_state_t(coro_io::ExecutorWrapper<>* executor)
-      : executor_(executor), soc_(std::in_place, executor->get_asio_executor()) {}
+      : executor_(executor), soc_(std::in_place, executor->get_asio_executor()) {
+    ELOG_DEBUG << "urma_socket_shared_state_t: executor=" << executor;
+  }
   ~urma_socket_shared_state_t() { close(); }
 
   urma_socket_shared_state_t(urma_socket_shared_state_t&&) = delete;
