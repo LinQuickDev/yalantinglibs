@@ -73,7 +73,7 @@ struct urma_socket_shared_state_t
   }
 
   coro_io::ExecutorWrapper<>* executor_;
-  std::optional<asio::ip::tcp::socket> soc_;
+  asio::ip::tcp::socket soc_;
 
   // URMA resources
   urma_context_t* urma_context_ = nullptr;
@@ -104,8 +104,13 @@ struct urma_socket_shared_state_t
   uint32_t remote_jetty_id_ = 0;
 
   urma_socket_shared_state_t() = default;
+  urma_socket_shared_state_t(coro_io::ExecutorWrapper<>* executor,
+                              const asio::any_io_executor& exec)
+      : executor_(executor), soc_(exec) {
+    ELOG_DEBUG << "urma_socket_shared_state_t: executor=" << executor;
+  }
   urma_socket_shared_state_t(coro_io::ExecutorWrapper<>* executor)
-      : executor_(executor), soc_(std::in_place, executor->get_asio_executor()) {
+      : executor_(executor), soc_(executor->get_asio_executor()) {
     ELOG_DEBUG << "urma_socket_shared_state_t: executor=" << executor;
   }
   ~urma_socket_shared_state_t() { close(); }
@@ -124,7 +129,7 @@ struct urma_socket_shared_state_t
 
   auto get_executor() const noexcept { return executor_; }
 
-  asio::ip::tcp::socket& socket() noexcept { return *soc_; }
+  asio::ip::tcp::socket& socket() noexcept { return soc_; }
 
   // Post receive buffer
   void post_recv_impl(callback_t&& handler);
@@ -332,7 +337,7 @@ inline bool urma_socket_shared_state_t::init(
   buffer_size_ = buffer_size;
 
   // Initialize socket with executor
-  soc_.emplace(executor->get_asio_executor());
+  soc_ = asio::ip::tcp::socket(executor->get_asio_executor());
 
   // Create JFC (Completion Channel) - polling mode (jfce = nullptr)
   urma_jfc_cfg_t jfc_cfg = {};
@@ -582,7 +587,7 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::connect(
   }
 
   // TCP handshake for connection establishment using coro_io async_connect
-  auto ec = co_await coro_io::async_connect(state_->executor_, *state_->soc_, addr, port);
+  auto ec = co_await coro_io::async_connect(state_->executor_, state_->soc_, addr, port);
   if (ec) [[unlikely]] {
     co_return ec;
   }
@@ -598,11 +603,11 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::connect(
   // Send our info
   char buffer[sizeof(urma_socket_info)];
   std::memcpy(buffer, &local_info, sizeof(local_info));
-  co_await async_write(*state_->soc_, asio::buffer(buffer));
+  co_await async_write(state_->soc_, asio::buffer(buffer));
 
   // Receive peer info
   urma_socket_info peer_info;
-  auto [ec2, _] = co_await async_read(*state_->soc_, asio::buffer(buffer, sizeof(buffer)));
+  auto [ec2, _] = co_await async_read(state_->soc_, asio::buffer(buffer, sizeof(buffer)));
   if (ec2) [[unlikely]] {
     co_return ec2;
   }
@@ -674,11 +679,11 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::connect(
   // Send our info
   char buffer[sizeof(urma_socket_info)];
   std::memcpy(buffer, &local_info, sizeof(local_info));
-  co_await async_write(*state_->soc_, asio::buffer(buffer));
+  co_await async_write(state_->soc_, asio::buffer(buffer));
 
   // Receive peer info
   urma_socket_info peer_info;
-  auto [ec2, _] = co_await async_read(*state_->soc_, asio::buffer(buffer, sizeof(buffer)));
+  auto [ec2, _] = co_await async_read(state_->soc_, asio::buffer(buffer, sizeof(buffer)));
   if (ec2) [[unlikely]] {
     co_return ec2;
   }
@@ -734,7 +739,7 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::accept() noexcep
 
   // Receive peer info
   char buffer[sizeof(urma_socket_info)];
-  auto [ec, _] = co_await async_read(*state_->soc_, asio::buffer(buffer));
+  auto [ec, _] = co_await async_read(state_->soc_, asio::buffer(buffer));
   if (ec) [[unlikely]] {
     co_return ec;
   }
@@ -764,7 +769,7 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::accept() noexcep
   std::memcpy(local_info.eid, local_eid.raw, URMA_EID_LEN);
 
   std::memcpy(buffer, &local_info, sizeof(local_info));
-  co_await async_write(*state_->soc_, asio::buffer(buffer));
+  co_await async_write(state_->soc_, asio::buffer(buffer));
 
   remote_address_ = eid_to_address(peer_info.eid);
   state_->remote_jetty_id_ = peer_info.jetty_id;
@@ -788,19 +793,13 @@ inline urma_socket_t::urma_socket_t(ExecutorWrapper<>* executor, const config_t&
   ELOG_DEBUG << "urma_socket_t: exec=" << exec;
   auto asio_exec = exec->get_asio_executor();
   ELOG_DEBUG << "urma_socket_t: asio_exec obtained, calling make_unique";
-  state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
+  state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec, asio_exec);
   ELOG_DEBUG << "after make unique in urma_socket_t";
   state_->executor_ = exec;
 }
 
 inline void urma_socket_t::prepare_accept(asio::ip::tcp::socket soc) noexcept {
-  if (!state_) {
-    state_ = std::make_unique<detail::urma_socket_shared_state_t>();
-  }
-  if (!state_->soc_.has_value()) {
-    state_->soc_.emplace(soc.get_executor());
-  }
-  *state_->soc_ = std::move(soc);
+  state_->soc_ = std::move(soc);
 }
 #ifdef YLT_ENABLE_URMA
 template <typename EndPointSeq>
