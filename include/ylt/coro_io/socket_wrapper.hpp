@@ -128,6 +128,7 @@ struct socket_wrapper_t {
 #endif
 #ifdef YLT_ENABLE_URMA
   bool init_client(const coro_io::urma_socket_t::config_t &config) {
+    ELOG_DEBUG << "URMA init_client: executor_=" << executor_;
     try {
       init_tcp_socket();
       if (urma_socket_) {

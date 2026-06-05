@@ -773,7 +773,16 @@ inline async_simple::coro::Lazy<std::error_code> urma_socket_t::accept() noexcep
 
 inline urma_socket_t::urma_socket_t(ExecutorWrapper<>* executor, const config_t& config)
     : conf_(config), buffer_size_(config.buffer_size) {
+  ELOG_DEBUG << "urma_socket_t(executor, config): executor=" << executor << " buffer_size=" << config.buffer_size;
+  if (!executor) {
+    ELOG_ERROR << "URMA urma_socket_t: executor is nullptr";
+    return;
+  }
   auto exec = static_cast<coro_io::ExecutorWrapper<>*>(executor->checkout());
+  if (!exec) {
+    ELOG_ERROR << "URMA urma_socket_t: checkout() returned nullptr";
+    return;
+  }
   state_ = std::make_unique<detail::urma_socket_shared_state_t>(exec);
   state_->executor_ = exec;
 }
