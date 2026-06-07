@@ -64,7 +64,7 @@ class urma_buffer_pool_t {
   void* context() const { return ctx_; }
 
   struct Config {
-    size_t buffer_size = 256 * 1024;
+    size_t buffer_size = 4 * 1024;
     size_t buffer_count = 8;
     int gpu_id = -1;
   };

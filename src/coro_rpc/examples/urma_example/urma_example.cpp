@@ -114,7 +114,7 @@ void set_option() {
                           the first URMA device*/
       .buffer_pool_config =
           {
-              .buffer_size = 256 * 1024,             /*buffer size*/
+              .buffer_size = 4 * 1024,               /*CTP send packet size*/
               .max_memory_usage = 20 * 1024 * 1024,  /*max memory usage*/
               .idle_timeout = 5s,
           },
