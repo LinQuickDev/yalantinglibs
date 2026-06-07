@@ -21,6 +21,7 @@
 #include "ibverbs/ib_socket.hpp"
 #endif
 #ifdef YLT_ENABLE_URMA
+#include "urma/urma_io.hpp"
 #include "urma/urma_socket.hpp"
 #endif
 #include "io_context_pool.hpp"

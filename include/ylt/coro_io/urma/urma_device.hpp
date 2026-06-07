@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@
 #include <algorithm>
 
 #include "ylt/easylog.hpp"
+#include "ylt/coro_io/urma/urma_buffer.hpp"
 
 #ifdef YLT_ENABLE_URMA
 #include "ylt/urma/urma_api.h"
@@ -42,6 +44,8 @@ class urma_device_wrapper_t {
   urma_device_wrapper_t& operator=(const urma_device_wrapper_t&) = delete;
 
   bool init(const std::string& device_name, int eid_index = 0);
+  bool configure_buffer_pool(std::size_t buffer_size,
+                             std::size_t max_memory_usage);
   void close();
 
   urma_context_t* context() const { return context_; }
@@ -60,7 +64,7 @@ class urma_device_wrapper_t {
  private:
   std::string name_;
   int eid_index_ = -1;
-  urma_device_t* device_ptr_ = nullptr;  // URMA library device handle
+  ::urma_device_t* device_ptr_ = nullptr;
   urma_context_t* context_ = nullptr;
   urma_eid_t eid_{};
   urma_device_attr_t device_attr_{};
@@ -109,7 +113,14 @@ inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device() {
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
     const urma_init_config_t& config) {
   ELOG_DEBUG << "get_global_urma_device(dev_name=" << config.dev_name << ", eid_index=" << config.eid_index << ") called";
-  return urma_device_manager::instance().get_device(config.dev_name, config.eid_index);
+  auto device =
+      urma_device_manager::instance().get_device(config.dev_name,
+                                                 config.eid_index);
+  if (device) {
+    device->configure_buffer_pool(config.buffer_pool_config.buffer_size,
+                                  config.buffer_pool_config.max_memory_usage);
+  }
+  return device;
 }
 
 // ============= Implementation (inline in header) =============
@@ -117,6 +128,23 @@ inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
 inline urma_device_wrapper_t::urma_device_wrapper_t() = default;
 
 inline urma_device_wrapper_t::~urma_device_wrapper_t() { close(); }
+
+inline bool urma_device_wrapper_t::configure_buffer_pool(
+    std::size_t buffer_size, std::size_t max_memory_usage) {
+  if (!context_ || buffer_size == 0) return false;
+  if (buffer_pool_) {
+    if (buffer_pool_->buffer_size() == buffer_size) return true;
+    if (buffer_pool_->free_buffer_count() !=
+        buffer_pool_->total_buffer_count()) {
+      ELOG_WARN << "cannot resize an in-use URMA buffer pool";
+      return false;
+    }
+  }
+  auto buffer_count = std::max<std::size_t>(1, max_memory_usage / buffer_size);
+  buffer_pool_ =
+      std::make_shared<urma_buffer_pool_t>(context_, buffer_size, buffer_count);
+  return buffer_pool_->total_buffer_count() != 0;
+}
 
 inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_index) {
 #ifdef YLT_ENABLE_URMA
@@ -146,6 +174,7 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
   }
 
   device_ptr_ = found_device;
+  name_ = found_device->name;
 
   uint32_t eid_cnt = 0;
   urma_eid_info_t* eid_list = urma_get_eid_list(device_ptr_, &eid_cnt);
@@ -179,6 +208,12 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
   }
 
   urma_free_device_list(devices);
+  auto default_pool_config = urma_buffer_pool_config_t{};
+  if (!configure_buffer_pool(default_pool_config.buffer_size,
+                             default_pool_config.max_memory_usage)) {
+    close();
+    return false;
+  }
   ELOG_INFO << "URMA device: " << name_ << ", EID: " << eid_string();
   return true;
 #else
@@ -190,6 +225,7 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
 inline void urma_device_wrapper_t::close() {
 #ifdef YLT_ENABLE_URMA
   if (context_) {
+    buffer_pool_.reset();
     urma_delete_context(context_);
     context_ = nullptr;
   }
@@ -233,7 +269,8 @@ inline bool urma_device_manager::init() {
 #ifdef YLT_ENABLE_URMA
   if (initialized_) return true;
   urma_init_attr_t init_attr = {};
-  if (urma_init(&init_attr) != URMA_SUCCESS && urma_init(&init_attr) != URMA_EEXIST) {
+  auto status = urma_init(&init_attr);
+  if (status != URMA_SUCCESS && status != URMA_EEXIST) {
     ELOG_ERROR << "urma_init failed";
     return false;
   }
@@ -247,16 +284,17 @@ inline bool urma_device_manager::init() {
 inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
     const std::string& device_name, int eid_index) {
 #ifdef YLT_ENABLE_URMA
-  if (!initialized_) init();
+  if (!initialized_ && !init()) return nullptr;
 
   for (auto& dev : devices_) {
-    if (device_name.empty() || dev->name() == device_name) {
+    if ((device_name.empty() || dev->name() == device_name) &&
+        dev->eid_index() == eid_index) {
       return dev;
     }
   }
 
   auto dev = std::make_shared<urma_device_wrapper_t>();
-  if (!dev->init(device_name)) return nullptr;
+  if (!dev->init(device_name, eid_index)) return nullptr;
 
   devices_.push_back(dev);
   if (!global_device_) global_device_ = dev;

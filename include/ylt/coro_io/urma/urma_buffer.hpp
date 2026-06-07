@@ -26,7 +26,7 @@
 #include "ylt/easylog.hpp"
 
 #ifdef YLT_ENABLE_URMA
-#include <urma_api.h>
+#include "ylt/urma/urma_api.h"
 #endif
 
 namespace coro_io {
@@ -73,7 +73,7 @@ class urma_buffer_pool_t {
   Config config_;
   std::vector<urma_buffer_t> buffers_;
   std::queue<size_t> free_indices_;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::atomic<size_t> outstanding_buffers_{0};
 };
 
@@ -173,6 +173,7 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
 
 inline size_t urma_buffer_pool_t::free_buffer_count() const {
 #ifdef YLT_ENABLE_URMA
+  std::lock_guard<std::mutex> lock(mutex_);
   return free_indices_.size();
 #else
   return 0;

@@ -210,6 +210,21 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       }
     }
 #endif
+#ifdef YLT_ENABLE_URMA
+    if constexpr (std::is_same_v<
+                      Socket, coro_io::socket_wrapper_t::urma_socket_type>) {
+      reset_timer(0, "urma handshake");
+      auto ec = co_await socket.accept(magic_number);
+      magic_number = "";
+      cancel_timer(0, "urma handshake");
+      if (ec) [[unlikely]] {
+        ELOG_ERROR << "urma handshake failed: " << ec.message()
+                   << " conn_id " << conn_id_;
+        close();
+        co_return;
+      }
+    }
+#endif
     auto context_info = std::make_shared<context_info_t<rpc_protocol>>(
         router, shared_from_this());
     uint64_t req_id = 0;
