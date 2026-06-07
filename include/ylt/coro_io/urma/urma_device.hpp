@@ -55,6 +55,12 @@ class urma_device_wrapper_t {
   const urma_eid_t& eid() const { return eid_; }
   uint32_t max_jetty() const { return device_attr_.dev_cap.max_jetty; }
   uint32_t max_jfc() const { return device_attr_.dev_cap.max_jfc; }
+  bool supports_rm_rtp() const {
+    return device_attr_.dev_cap.rm_tp_cap.bs.rtp != 0;
+  }
+  bool supports_rm_ctp() const {
+    return device_attr_.dev_cap.rm_tp_cap.bs.ctp != 0;
+  }
 
   std::string eid_string() const;
   asio::ip::address gid_address() const;
@@ -184,12 +190,21 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
     return false;
   }
 
-  if (eid_index >= 0 && eid_index < (int)eid_cnt) {
-    eid_index_ = eid_index;
-  } else {
-    eid_index_ = 0;
+  int eid_slot = 0;
+  bool found_eid_index = false;
+  for (uint32_t i = 0; i < eid_cnt; ++i) {
+    if (eid_list[i].eid_index == static_cast<uint32_t>(eid_index)) {
+      eid_slot = static_cast<int>(i);
+      found_eid_index = true;
+      break;
+    }
   }
-  eid_ = eid_list[eid_index_].eid;
+  if (!found_eid_index) {
+    ELOG_WARN << "URMA EID index " << eid_index
+              << " was not found; using index " << eid_list[0].eid_index;
+  }
+  eid_ = eid_list[eid_slot].eid;
+  eid_index_ = static_cast<int>(eid_list[eid_slot].eid_index);
   urma_free_eid_list(eid_list);
 
   context_ = urma_create_context(device_ptr_, eid_index_);

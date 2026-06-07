@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -351,6 +352,7 @@ class urma_socket_t {
     uint32_t buffer_size = 256 * 1024;
     std::string device_name;
     int eid_index = 0;
+    urma_tp_type_t tp_type = URMA_CTP;
   };
 
   enum io_type { recv = 0, send = 1 };
@@ -361,6 +363,7 @@ class urma_socket_t {
     uint32_t uasid;
     uint32_t jetty_id;
     uint32_t buffer_size;
+    uint8_t tp_type;
     constexpr static auto struct_pack_config = struct_pack::DISABLE_TYPE_INFO;
   };
 
@@ -545,6 +548,12 @@ class urma_socket_t {
     if (!device || !device->is_valid() || !device->get_buffer_pool())
       throw std::system_error(
           std::make_error_code(std::errc::no_such_device));
+    if (conf_.tp_type == URMA_CTP && !device->supports_rm_ctp())
+      throw std::system_error(
+          std::make_error_code(std::errc::operation_not_supported));
+    if (conf_.tp_type == URMA_RTP && !device->supports_rm_rtp())
+      throw std::system_error(
+          std::make_error_code(std::errc::operation_not_supported));
     buffer_size_ = std::min<uint32_t>(
         conf_.buffer_size, device->get_buffer_pool()->buffer_size());
     state_ = std::make_shared<detail::urma_socket_shared_state_t>(
@@ -561,6 +570,7 @@ class urma_socket_t {
     info.uasid = state_->jetty_->jetty_id.uasid;
     info.jetty_id = state_->jetty_->jetty_id.id;
     info.buffer_size = buffer_pool()->buffer_size();
+    info.tp_type = static_cast<uint8_t>(conf_.tp_type);
     return info;
   }
 
@@ -571,11 +581,29 @@ class urma_socket_t {
     remote.jetty_id.id = peer.jetty_id;
     remote.trans_mode = URMA_TM_RM;
     remote.type = URMA_JETTY;
-    remote.tp_type = URMA_CTP;
+    if (peer.tp_type > static_cast<uint8_t>(URMA_UTP)) {
+      ELOG_ERROR << "invalid remote URMA TP type: "
+                 << static_cast<unsigned>(peer.tp_type);
+      return std::make_error_code(std::errc::protocol_error);
+    }
+    remote.tp_type = static_cast<urma_tp_type_t>(peer.tp_type);
+    urma_token_t token{};
+    errno = 0;
     state_->remote_jetty_.reset(
-        urma_import_jetty(state_->device_->context(), &remote, nullptr));
-    if (!state_->remote_jetty_)
-      return std::make_error_code(std::errc::connection_refused);
+        urma_import_jetty(state_->device_->context(), &remote, &token));
+    if (!state_->remote_jetty_) {
+      auto error = errno != 0
+                       ? std::error_code(errno, std::generic_category())
+                       : std::make_error_code(std::errc::connection_refused);
+      ELOG_ERROR << "urma_import_jetty failed: " << error.message()
+                 << ", errno=" << errno << ", remote_eid="
+                 << eid_to_address(peer.eid).to_string()
+                 << ", remote_uasid=" << peer.uasid
+                 << ", remote_jetty_id=" << peer.jetty_id
+                 << ", trans_mode=" << remote.trans_mode
+                 << ", tp_type=" << remote.tp_type;
+      return error;
+    }
     remote_jetty_id_ = peer.jetty_id;
     buffer_size_ =
         std::min<uint32_t>(peer.buffer_size, buffer_pool()->buffer_size());
