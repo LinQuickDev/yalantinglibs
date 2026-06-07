@@ -1436,8 +1436,10 @@ class coro_rpc_client {
     static_check<func, Args...>();
 
     if (config.request_timeout_duration->count() >= 0) {
-      timeout(timer, *config.request_timeout_duration,
-              "rpc call timer canceled")
+      ELOG_DEBUG << "rpc call timer start, timeout_ms="
+                 << config.request_timeout_duration->count()
+                 << ", client_id: " << config_.client_id;
+      timeout(timer, *config.request_timeout_duration, "rpc call timeout")
           .start([](auto &&) {
           });
     }
@@ -1761,8 +1763,9 @@ class coro_rpc_client {
 #endif
     std::pair<std::error_code, size_t> ret;
     auto tp = std::chrono::steady_clock::now();
-    ELOG_TRACE << "rpc request send start, client_id: " << config_.client_id
-               << ", request ID: " << id;
+    ELOG_DEBUG << "rpc request send start, client_id: " << config_.client_id
+               << ", request ID: " << id << ", body_size=" << buffer.size()
+               << ", attachment_size=" << req_attachment.size();
 #ifdef UNIT_TEST_INJECT
     if (g_action == inject_action::client_send_bad_header) {
       buffer[0] = (std::byte)(uint8_t(buffer[0]) + 1);
@@ -1871,12 +1874,12 @@ class coro_rpc_client {
         co_return rpc_error{errc::io_error, ret.first.message()};
       }
     }
-    ELOG_TRACE << "rpc request send over, client_id: " << config_.client_id
+    ELOG_DEBUG << "rpc request send over, client_id: " << config_.client_id
                << ", cost time = "
                << (std::chrono::steady_clock::now() - tp) /
                       std::chrono::microseconds(1)
                << "us"
-               << ", request ID: " << id;
+               << ", request ID: " << id << ", bytes=" << ret.second;
     co_return rpc_error{};
   }
 

@@ -410,7 +410,7 @@ class urma_socket_t {
     uint32_t cq_size = 128;
     uint16_t recv_buffer_cnt = 8;
     uint16_t send_buffer_cnt = 4;
-    uint32_t buffer_size = 256 * 1024;
+    uint32_t buffer_size = 4 * 1024;
     std::string device_name;
     int eid_index = 0;
     urma_tp_type_t tp_type = URMA_CTP;
@@ -576,8 +576,7 @@ class urma_socket_t {
     auto length = std::min(size, remain_data_.size());
     std::memcpy(destination, remain_data_.data(), length);
     remain_data_.remove_prefix(length);
-    if (remain_data_.empty() && state_->recv_buffer_)
-      state_->device_->get_buffer_pool()->return_buffer(state_->recv_buffer_);
+    if (remain_data_.empty()) release_recv_buffer();
     return length;
   }
 
@@ -586,8 +585,7 @@ class urma_socket_t {
   void set_read_buffer_len(std::size_t consumed, std::size_t remaining) {
     remain_data_ = std::string_view(
         static_cast<char*>(state_->recv_buffer_.addr) + consumed, remaining);
-    if (remaining == 0 && state_->recv_buffer_)
-      state_->device_->get_buffer_pool()->return_buffer(state_->recv_buffer_);
+    if (remaining == 0) release_recv_buffer();
   }
 
   asio::ip::address get_remote_address() const noexcept {
@@ -621,6 +619,14 @@ class urma_socket_t {
               << ", send_buffer_cnt=" << config.send_buffer_cnt
               << ", buffer_size=" << config.buffer_size
               << ", executor=" << executor_;
+    constexpr uint32_t ctp_max_send_size = 4 * 1024;
+    if (config.tp_type == URMA_CTP && config.buffer_size > ctp_max_send_size) {
+      ELOG_WARN << "URMA CTP buffer_size " << config.buffer_size
+                << " is larger than the documented bonding CTP max send packet "
+                   "size; clamp to "
+                << ctp_max_send_size;
+      config.buffer_size = ctp_max_send_size;
+    }
     config.recv_buffer_cnt = std::max<uint16_t>(config.recv_buffer_cnt, 1);
     config.send_buffer_cnt = std::max<uint16_t>(config.send_buffer_cnt, 1);
     config.cq_size =
@@ -773,6 +779,11 @@ class urma_socket_t {
               << handshake_local_port_ << ", remote_jetty_id="
               << remote_jetty_id_ << ", local_jetty_id="
               << state_->jetty_->jetty_id.id;
+  }
+
+  void release_recv_buffer() {
+    if (state_->recv_buffer_)
+      state_->device_->get_buffer_pool()->return_buffer(state_->recv_buffer_);
   }
 
   void close_handshake_socket() {

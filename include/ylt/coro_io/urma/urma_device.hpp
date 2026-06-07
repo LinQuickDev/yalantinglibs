@@ -101,7 +101,7 @@ class urma_device_manager {
 
 // URMA buffer pool configuration
 struct urma_buffer_pool_config_t {
-  uint32_t buffer_size = 256 * 1024;           // buffer size
+  uint32_t buffer_size = 4 * 1024;             // buffer size
   uint64_t max_memory_usage = 20 * 1024 * 1024;  // max memory usage
   std::chrono::seconds idle_timeout{5};        // idle timeout
 };

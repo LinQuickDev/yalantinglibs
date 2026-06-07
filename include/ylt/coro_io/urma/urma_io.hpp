@@ -79,7 +79,12 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
 
   std::vector<asio::const_buffer> buffers;
   detail::make_urma_buffers(buffers, raw_buffer);
+  std::size_t total_size = 0;
+  for (auto& item : buffers) total_size += item.size();
   std::size_t completed = 0;
+  ELOG_DEBUG << "URMA async_write start: total_size=" << total_size
+             << ", chunk_size=" << socket.get_buffer_size()
+             << ", send_window=" << socket.get_send_window_size();
   while (!buffers.empty()) {
     auto buffer = socket.get_send_buffer();
     if (!buffer)
@@ -109,6 +114,8 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
     if (result.first) co_return std::pair{result.first, completed};
     completed += length;
   }
+  ELOG_DEBUG << "URMA async_write done: total_size=" << total_size
+             << ", completed=" << completed;
   co_return std::pair{std::error_code{}, completed};
 }
 

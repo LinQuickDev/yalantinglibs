@@ -34,16 +34,16 @@ using namespace std::chrono_literals;
 
 std::string_view echo(std::string_view data) { return data; }
 
-void check_echo_result(const coro_rpc::rpc_result<std::string_view>& result,
+bool check_echo_result(const coro_rpc::rpc_result<std::string_view>& result,
                        std::string_view expected) {
   if (!result) {
     ELOG_ERROR << "echo RPC failed: code=" << result.error().val()
                << ", message=" << result.error().msg;
-    return;
+    return false;
   }
   if (result.value() == expected) {
     ELOG_INFO << "echo ok!";
-    return;
+    return true;
   }
 
   auto actual = result.value();
@@ -54,6 +54,14 @@ void check_echo_result(const coro_rpc::rpc_result<std::string_view>& result,
   ELOG_ERROR << "echo data err: expected_size=" << expected.size()
              << ", actual_size=" << actual.size()
              << ", first_mismatch_offset=" << mismatch_offset;
+  return false;
+}
+
+bool warmup_urma_rpc(coro_rpc_client& client) {
+  std::string warmup = "urma warmup";
+  ELOG_INFO << "running URMA warmup RPC";
+  auto result = syncAwait(client.call_for<echo>(30s, warmup));
+  return check_echo_result(result, warmup);
 }
 
 // The basic example about how to start a rpc connection over URMA.
@@ -81,6 +89,11 @@ void basic_example() {
                                      std::to_string(server.port())));
   if (ec) {
     ELOG_ERROR << ec.message();
+    return;
+  }
+
+  if (!warmup_urma_rpc(client)) {
+    server.stop();
     return;
   }
 
@@ -112,9 +125,9 @@ void set_option() {
   coro_rpc_client::config conf;
   ELOG_INFO << "set_option: client created, configuring urma";
   auto urma_config = coro_io::urma_socket_t::config_t{
-      .recv_buffer_cnt = 4,  // buffer cnt of recv queue
-      .send_buffer_cnt = 4,   // buffer cnt of send queue
-      .buffer_size = 256 * 1024,  // buffer size 256KB
+      .recv_buffer_cnt = 64,  // buffer cnt of recv queue
+      .send_buffer_cnt = 64,  // buffer cnt of send queue
+      .buffer_size = 4 * 1024,  // CTP max send packet size on bonding_dev_0
       .device_name = "bonding_dev_0",  // empty means auto-select
       .eid_index = 0      // EID index
   };
@@ -147,6 +160,11 @@ void set_option() {
                                      std::to_string(server.port())));
   if (ec) {
     ELOG_ERROR << ec.message();
+    return;
+  }
+
+  if (!warmup_urma_rpc(client)) {
+    server.stop();
     return;
   }
 
