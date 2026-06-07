@@ -16,12 +16,17 @@
 #pragma once
 
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <queue>
-#include <vector>
 #include <mutex>
+#include <system_error>
+#include <unistd.h>
+#include <vector>
 
 #include "ylt/easylog.hpp"
 
@@ -89,28 +94,48 @@ inline bool urma_buffer_pool_t::init_buffers() {
 #ifdef YLT_ENABLE_URMA
   buffers_.reserve(config_.buffer_count);
 
+  long page_size_value = ::sysconf(_SC_PAGESIZE);
+  size_t page_size =
+      page_size_value > 0 ? static_cast<size_t>(page_size_value) : 4096;
   for (size_t i = 0; i < config_.buffer_count; ++i) {
-    void* addr = std::malloc(config_.buffer_size);
-    if (!addr) {
-      ELOG_ERROR << "Failed to allocate buffer";
+    void* addr = nullptr;
+    int alloc_status = ::posix_memalign(&addr, page_size, config_.buffer_size);
+    if (alloc_status != 0) {
+      ELOG_ERROR << "Failed to allocate page-aligned URMA buffer: "
+                 << std::error_code(alloc_status, std::generic_category())
+                        .message()
+                 << ", alignment=" << page_size
+                 << ", size=" << config_.buffer_size;
       break;
     }
+    std::memset(addr, 0, config_.buffer_size);
 
     urma_reg_seg_flag_t flag = {};
     flag.bs.token_policy = URMA_TOKEN_NONE;
     flag.bs.cacheable = URMA_NON_CACHEABLE;
-    flag.bs.access = URMA_ACCESS_READ | URMA_ACCESS_WRITE;
+    flag.bs.access =
+        URMA_ACCESS_READ | URMA_ACCESS_WRITE | URMA_ACCESS_ATOMIC;
     flag.bs.token_id_valid = 0;
 
     urma_seg_cfg_t seg_cfg = {};
     seg_cfg.va = reinterpret_cast<uint64_t>(addr);
     seg_cfg.len = config_.buffer_size;
+    seg_cfg.token_id = nullptr;
+    seg_cfg.token_value = {};
     seg_cfg.flag = flag;
+    seg_cfg.user_ctx = reinterpret_cast<uint64_t>(addr);
+    seg_cfg.iova = 0;
 
+    errno = 0;
     urma_target_seg_t* seg = urma_register_seg(
         reinterpret_cast<urma_context_t*>(ctx_), &seg_cfg);
     if (!seg) {
-      ELOG_ERROR << "urma_register_seg failed";
+      auto error = std::error_code(errno, std::generic_category());
+      ELOG_ERROR << "urma_register_seg failed: errno=" << errno
+                 << " (" << error.message() << ")"
+                 << ", address=" << addr << ", length=" << seg_cfg.len
+                 << ", alignment=" << page_size
+                 << ", access=" << flag.bs.access;
       std::free(addr);
       break;
     }
