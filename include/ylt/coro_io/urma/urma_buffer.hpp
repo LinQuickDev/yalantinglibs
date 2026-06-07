@@ -27,6 +27,7 @@
 #include <queue>
 #include <mutex>
 #include <system_error>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <vector>
 
@@ -82,6 +83,7 @@ class urma_buffer_pool_t {
   size_t allocation_size_ = 0;
   void* seg_ = nullptr;  // urma_target_seg_t*
   std::vector<urma_buffer_t> buffers_;
+  std::vector<uint8_t> in_use_;
   std::queue<size_t> free_indices_;
   mutable std::mutex mutex_;
   std::atomic<size_t> outstanding_buffers_{0};
@@ -111,15 +113,18 @@ inline bool urma_buffer_pool_t::init_buffers() {
                << ", buffer_count=" << config_.buffer_count;
     return false;
   }
-  allocation_size_ = config_.buffer_size * config_.buffer_count;
-  int alloc_status =
-      ::posix_memalign(&base_addr_, page_size, allocation_size_);
-  if (alloc_status != 0) {
-    ELOG_ERROR << "Failed to allocate page-aligned URMA buffer pool: "
-               << std::error_code(alloc_status, std::generic_category())
-                      .message()
-               << ", alignment=" << page_size
+  auto requested_size = config_.buffer_size * config_.buffer_count;
+  allocation_size_ =
+      (requested_size + page_size - 1) / page_size * page_size;
+  base_addr_ = ::mmap(nullptr, allocation_size_, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (base_addr_ == MAP_FAILED) {
+    auto error = std::error_code(errno, std::generic_category());
+    ELOG_ERROR << "Failed to mmap page-aligned URMA buffer pool: errno="
+               << errno << " (" << error.message() << ")"
                << ", size=" << allocation_size_;
+    base_addr_ = nullptr;
+    allocation_size_ = 0;
     return false;
   }
 
@@ -146,13 +151,14 @@ inline bool urma_buffer_pool_t::init_buffers() {
                << error.message() << ")"
                << ", address=" << base_addr_ << ", length=" << seg_cfg.len
                << ", alignment=" << page_size << ", access=" << flag.bs.access;
-    std::free(base_addr_);
+    ::munmap(base_addr_, allocation_size_);
     base_addr_ = nullptr;
     allocation_size_ = 0;
     return false;
   }
 
   auto* base = static_cast<char*>(base_addr_);
+  in_use_.assign(config_.buffer_count, 0);
   for (size_t i = 0; i < config_.buffer_count; ++i) {
     buffers_.push_back(urma_buffer_t(base + i * config_.buffer_size,
                                      config_.buffer_size, seg_));
@@ -179,11 +185,12 @@ inline urma_buffer_pool_t::~urma_buffer_pool_t() {
     seg_ = nullptr;
   }
   if (base_addr_) {
-    std::free(base_addr_);
+    ::munmap(base_addr_, allocation_size_);
     base_addr_ = nullptr;
   }
   allocation_size_ = 0;
   buffers_.clear();
+  in_use_.clear();
 #endif
 }
 
@@ -196,6 +203,7 @@ inline urma_buffer_t urma_buffer_pool_t::get_buffer(int gpu_id) {
   }
   size_t idx = free_indices_.front();
   free_indices_.pop();
+  if (idx < in_use_.size()) in_use_[idx] = 1;
   outstanding_buffers_++;
   return buffers_[idx];
 #else
@@ -214,8 +222,16 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
     if (offset % config_.buffer_size == 0) {
       auto index = offset / config_.buffer_size;
       if (index < buffers_.size()) {
+        if (index < in_use_.size() && !in_use_[index]) {
+          ELOG_WARN << "return duplicated URMA buffer: " << buffer.addr
+                    << ", index=" << index;
+          buffer = urma_buffer_t{};
+          return;
+        }
+        if (index < in_use_.size()) in_use_[index] = 0;
         free_indices_.push(index);
-        outstanding_buffers_--;
+        if (outstanding_buffers_.load(std::memory_order_relaxed) > 0)
+          outstanding_buffers_--;
         buffer = urma_buffer_t{};
         return;
       }
