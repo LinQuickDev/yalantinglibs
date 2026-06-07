@@ -65,8 +65,12 @@ struct options_t {
   uint16_t queue_depth = 64;
   uint32_t buffer_size = 4 * 1024;
   uint64_t max_memory_usage = 256ull * 1024 * 1024;
-  easylog::Severity log_level = easylog::Severity::WARN;
+  easylog::Severity log_level = easylog::Severity::INFO;
 };
+
+void status(std::string_view message) {
+  std::cout << "[urma_benchmark] " << message << std::endl;
+}
 
 void print_usage(const char* program) {
   std::cout
@@ -81,7 +85,7 @@ void print_usage(const char* program) {
       << "  --payload <bytes>        Echo payload size. Default 64\n"
       << "  --buffer-size <bytes>    URMA SEND chunk size. Default 4096 for CTP\n"
       << "  --queue-depth <n>        URMA send/recv queue depth. Default 64\n"
-      << "  --log <trace|debug|info|warn|error> Default warn\n\n"
+      << "  --log <trace|debug|info|warn|error> Default info\n\n"
       << "Client options:\n"
       << "  --mode <latency|throughput|both> Default both\n"
       << "  --latency-iters <n>      Low-load serial requests. Default 10000\n"
@@ -222,8 +226,9 @@ coro_io::urma_socket_t::config_t make_urma_config(const options_t& opt) {
       .tp_type = URMA_CTP};
 }
 
-void init_global_urma(const options_t& opt) {
-  coro_io::get_global_urma_device(coro_io::urma_init_config_t{
+bool init_global_urma(const options_t& opt) {
+  status("initializing global URMA device");
+  auto device = coro_io::get_global_urma_device(coro_io::urma_init_config_t{
       .dev_name = opt.device,
       .buffer_pool_config =
           {
@@ -232,23 +237,40 @@ void init_global_urma(const options_t& opt) {
               .idle_timeout = 5s,
           },
       .eid_index = opt.eid_index});
+  if (!device || !device->is_valid() || !device->get_buffer_pool()) {
+    std::cerr << "[urma_benchmark] failed to initialize global URMA device"
+              << std::endl;
+    return false;
+  }
+  status("global URMA device initialized");
+  return true;
 }
 
-Lazy<bool> connect_client(coro_rpc_client& client, const options_t& opt) {
+Lazy<bool> connect_client(coro_rpc_client& client, const options_t& opt,
+                          uint32_t client_index = 0) {
+  std::cout << "[urma_benchmark] client " << client_index
+            << " initializing URMA socket" << std::endl;
   if (!client.init_urma(make_urma_config(opt))) {
     ELOG_ERROR << "init URMA client failed";
     co_return false;
   }
+  std::cout << "[urma_benchmark] client " << client_index << " connecting to "
+            << opt.host << ":" << opt.port << std::endl;
   auto ec = co_await client.connect(opt.host, std::to_string(opt.port), 30s);
   if (ec) {
     ELOG_ERROR << "connect failed: " << ec.message();
     co_return false;
   }
+  std::cout << "[urma_benchmark] client " << client_index << " connected"
+            << std::endl;
   co_return true;
 }
 
 Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
-                  uint32_t count) {
+                  uint32_t count, uint32_t client_index = 0) {
+  if (count == 0) co_return true;
+  std::cout << "[urma_benchmark] client " << client_index
+            << " warmup start, iterations=" << count << std::endl;
   for (uint32_t i = 0; i < count; ++i) {
     auto result = co_await client.call_for<bench_echo>(30s, payload);
     if (!result || result.value().size() != payload.size()) {
@@ -256,6 +278,8 @@ Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
       co_return false;
     }
   }
+  std::cout << "[urma_benchmark] client " << client_index << " warmup done"
+            << std::endl;
   co_return true;
 }
 
@@ -280,12 +304,15 @@ void print_latency_result(std::vector<uint64_t>& samples) {
 }
 
 Lazy<void> run_latency(const options_t& opt, const std::string& payload) {
+  status("latency test starting");
   coro_rpc_client client;
   if (!(co_await connect_client(client, opt))) co_return;
   if (!(co_await warmup(client, payload, opt.warmup_iters))) co_return;
 
   std::vector<uint64_t> samples;
   samples.reserve(opt.latency_iters);
+  std::cout << "[urma_benchmark] latency measurement start, iterations="
+            << opt.latency_iters << std::endl;
   for (uint32_t i = 0; i < opt.latency_iters; ++i) {
     auto begin = std::chrono::steady_clock::now();
     auto result = co_await client.call_for<bench_echo>(30s, payload);
@@ -299,6 +326,7 @@ Lazy<void> run_latency(const options_t& opt, const std::string& payload) {
             .count()));
   }
   print_latency_result(samples);
+  status("latency test finished");
 }
 
 struct worker_result_t {
@@ -325,12 +353,13 @@ Lazy<worker_result_t> throughput_worker(coro_rpc_client& client,
 }
 
 Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
+  status("throughput test preparing clients");
   std::vector<std::unique_ptr<coro_rpc_client>> clients;
   clients.reserve(opt.connections);
   for (uint32_t i = 0; i < opt.connections; ++i) {
     auto client = std::make_unique<coro_rpc_client>();
-    if (!(co_await connect_client(*client, opt))) co_return;
-    if (!(co_await warmup(*client, payload, opt.warmup_iters))) co_return;
+    if (!(co_await connect_client(*client, opt, i))) co_return;
+    if (!(co_await warmup(*client, payload, opt.warmup_iters, i))) co_return;
     clients.push_back(std::move(client));
   }
 
@@ -343,6 +372,9 @@ Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
                                         deadline));
   }
 
+  std::cout << "[urma_benchmark] throughput measurement start, duration_s="
+            << opt.duration_seconds << ", concurrency=" << opt.concurrency
+            << ", connections=" << opt.connections << std::endl;
   auto begin = std::chrono::steady_clock::now();
   auto results = co_await collectAll(std::move(workers));
   auto end = std::chrono::steady_clock::now();
@@ -366,10 +398,17 @@ Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
             << " rps=" << rps << " payload_mib_per_s=" << mbps
             << " concurrency=" << opt.concurrency
             << " connections=" << opt.connections << "\n";
+  status("throughput test finished");
 }
 
 int run_server(const options_t& opt) {
-  init_global_urma(opt);
+  std::cout << "[urma_benchmark] server starting, listen=" << opt.host << ":"
+            << opt.port << ", device=" << opt.device
+            << ", eid_index=" << opt.eid_index
+            << ", buffer_size=" << opt.buffer_size
+            << ", queue_depth=" << opt.queue_depth << std::endl;
+  if (!init_global_urma(opt)) return 1;
+  status("constructing RPC server");
   coro_rpc_server server(opt.server_threads, opt.port, opt.host);
   server.init_urma(make_urma_config(opt));
   server.register_handler<bench_echo>();
@@ -377,19 +416,27 @@ int run_server(const options_t& opt) {
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth << "\n";
+            << ", queue_depth=" << opt.queue_depth << std::endl;
+  status("entering server event loop");
   return !server.start();
 }
 
 int run_client(const options_t& opt) {
+  std::cout << "[urma_benchmark] client starting, target=" << opt.host << ":"
+            << opt.port << ", mode=" << opt.mode
+            << ", payload=" << opt.payload_size
+            << ", buffer_size=" << opt.buffer_size
+            << ", queue_depth=" << opt.queue_depth
+            << ", connections=" << opt.connections
+            << ", concurrency=" << opt.concurrency << std::endl;
   coro_io::get_global_executor(opt.client_threads);
-  init_global_urma(opt);
+  if (!init_global_urma(opt)) return 1;
   std::string payload(opt.payload_size, 'x');
   std::cout << "URMA RPC benchmark client target " << opt.host << ":"
             << opt.port << ", mode=" << opt.mode
             << ", payload=" << opt.payload_size
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth << "\n";
+            << ", queue_depth=" << opt.queue_depth << std::endl;
 
   if (opt.mode == "latency" || opt.mode == "both") {
     syncAwait(run_latency(opt, payload));
@@ -402,6 +449,8 @@ int run_client(const options_t& opt) {
 
 int main(int argc, char** argv) {
   try {
+    std::cout.setf(std::ios::unitbuf);
+    std::cerr.setf(std::ios::unitbuf);
     auto opt = parse_options(argc, argv);
     easylog::logger<>::instance().set_min_severity(opt.log_level);
     easylog::logger<>::instance().set_async(false);

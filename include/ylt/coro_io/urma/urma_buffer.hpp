@@ -17,10 +17,12 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <queue>
 #include <mutex>
@@ -76,6 +78,9 @@ class urma_buffer_pool_t {
  private:
   void* ctx_ = nullptr;
   Config config_;
+  void* base_addr_ = nullptr;
+  size_t allocation_size_ = 0;
+  void* seg_ = nullptr;  // urma_target_seg_t*
   std::vector<urma_buffer_t> buffers_;
   std::queue<size_t> free_indices_;
   mutable std::mutex mutex_;
@@ -92,60 +97,74 @@ inline urma_buffer_pool_t::urma_buffer_pool_t(void* ctx, size_t buffer_size,
 
 inline bool urma_buffer_pool_t::init_buffers() {
 #ifdef YLT_ENABLE_URMA
+  auto init_begin = std::chrono::steady_clock::now();
   buffers_.reserve(config_.buffer_count);
 
   long page_size_value = ::sysconf(_SC_PAGESIZE);
   size_t page_size =
       page_size_value > 0 ? static_cast<size_t>(page_size_value) : 4096;
+  if (config_.buffer_size == 0 || config_.buffer_count == 0) return false;
+  if (config_.buffer_count >
+      std::numeric_limits<size_t>::max() / config_.buffer_size) {
+    ELOG_ERROR << "URMA buffer pool size overflow: buffer_size="
+               << config_.buffer_size
+               << ", buffer_count=" << config_.buffer_count;
+    return false;
+  }
+  allocation_size_ = config_.buffer_size * config_.buffer_count;
+  int alloc_status =
+      ::posix_memalign(&base_addr_, page_size, allocation_size_);
+  if (alloc_status != 0) {
+    ELOG_ERROR << "Failed to allocate page-aligned URMA buffer pool: "
+               << std::error_code(alloc_status, std::generic_category())
+                      .message()
+               << ", alignment=" << page_size
+               << ", size=" << allocation_size_;
+    return false;
+  }
+
+  urma_reg_seg_flag_t flag = {};
+  flag.bs.token_policy = URMA_TOKEN_NONE;
+  flag.bs.cacheable = URMA_NON_CACHEABLE;
+  flag.bs.access = URMA_ACCESS_READ | URMA_ACCESS_WRITE | URMA_ACCESS_ATOMIC;
+  flag.bs.token_id_valid = 0;
+
+  urma_seg_cfg_t seg_cfg = {};
+  seg_cfg.va = reinterpret_cast<uint64_t>(base_addr_);
+  seg_cfg.len = allocation_size_;
+  seg_cfg.token_id = nullptr;
+  seg_cfg.token_value = {};
+  seg_cfg.flag = flag;
+  seg_cfg.user_ctx = reinterpret_cast<uint64_t>(base_addr_);
+  seg_cfg.iova = 0;
+
+  errno = 0;
+  seg_ = urma_register_seg(reinterpret_cast<urma_context_t*>(ctx_), &seg_cfg);
+  if (!seg_) {
+    auto error = std::error_code(errno, std::generic_category());
+    ELOG_ERROR << "urma_register_seg failed: errno=" << errno << " ("
+               << error.message() << ")"
+               << ", address=" << base_addr_ << ", length=" << seg_cfg.len
+               << ", alignment=" << page_size << ", access=" << flag.bs.access;
+    std::free(base_addr_);
+    base_addr_ = nullptr;
+    allocation_size_ = 0;
+    return false;
+  }
+
+  auto* base = static_cast<char*>(base_addr_);
   for (size_t i = 0; i < config_.buffer_count; ++i) {
-    void* addr = nullptr;
-    int alloc_status = ::posix_memalign(&addr, page_size, config_.buffer_size);
-    if (alloc_status != 0) {
-      ELOG_ERROR << "Failed to allocate page-aligned URMA buffer: "
-                 << std::error_code(alloc_status, std::generic_category())
-                        .message()
-                 << ", alignment=" << page_size
-                 << ", size=" << config_.buffer_size;
-      break;
-    }
-    std::memset(addr, 0, config_.buffer_size);
-
-    urma_reg_seg_flag_t flag = {};
-    flag.bs.token_policy = URMA_TOKEN_NONE;
-    flag.bs.cacheable = URMA_NON_CACHEABLE;
-    flag.bs.access =
-        URMA_ACCESS_READ | URMA_ACCESS_WRITE | URMA_ACCESS_ATOMIC;
-    flag.bs.token_id_valid = 0;
-
-    urma_seg_cfg_t seg_cfg = {};
-    seg_cfg.va = reinterpret_cast<uint64_t>(addr);
-    seg_cfg.len = config_.buffer_size;
-    seg_cfg.token_id = nullptr;
-    seg_cfg.token_value = {};
-    seg_cfg.flag = flag;
-    seg_cfg.user_ctx = reinterpret_cast<uint64_t>(addr);
-    seg_cfg.iova = 0;
-
-    errno = 0;
-    urma_target_seg_t* seg = urma_register_seg(
-        reinterpret_cast<urma_context_t*>(ctx_), &seg_cfg);
-    if (!seg) {
-      auto error = std::error_code(errno, std::generic_category());
-      ELOG_ERROR << "urma_register_seg failed: errno=" << errno
-                 << " (" << error.message() << ")"
-                 << ", address=" << addr << ", length=" << seg_cfg.len
-                 << ", alignment=" << page_size
-                 << ", access=" << flag.bs.access;
-      std::free(addr);
-      break;
-    }
-
-    buffers_.push_back(urma_buffer_t(addr, config_.buffer_size, seg));
+    buffers_.push_back(urma_buffer_t(base + i * config_.buffer_size,
+                                     config_.buffer_size, seg_));
     free_indices_.push(i);
   }
 
   ELOG_INFO << "URMA buffer pool: " << buffers_.size()
-            << " buffers of " << config_.buffer_size << " bytes";
+            << " buffers of " << config_.buffer_size
+            << " bytes, one registered segment of " << allocation_size_
+            << " bytes, init_cost_us="
+            << (std::chrono::steady_clock::now() - init_begin) /
+                   std::chrono::microseconds(1);
   return !buffers_.empty();
 #else
   return false;
@@ -155,12 +174,15 @@ inline bool urma_buffer_pool_t::init_buffers() {
 inline urma_buffer_pool_t::~urma_buffer_pool_t() {
 #ifdef YLT_ENABLE_URMA
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& buf : buffers_) {
-    if (buf) {
-      if (buf.seg) urma_unregister_seg(static_cast<urma_target_seg_t*>(buf.seg));
-      std::free(buf.addr);
-    }
+  if (seg_) {
+    urma_unregister_seg(static_cast<urma_target_seg_t*>(seg_));
+    seg_ = nullptr;
   }
+  if (base_addr_) {
+    std::free(base_addr_);
+    base_addr_ = nullptr;
+  }
+  allocation_size_ = 0;
   buffers_.clear();
 #endif
 }
@@ -185,14 +207,21 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
 #ifdef YLT_ENABLE_URMA
   if (!buffer) return;
   std::lock_guard<std::mutex> lock(mutex_);
-  for (size_t i = 0; i < buffers_.size(); ++i) {
-    if (buffers_[i].addr == buffer.addr) {
-      free_indices_.push(i);
-      outstanding_buffers_--;
-      buffer = urma_buffer_t{};
-      return;
+  auto* base = static_cast<char*>(base_addr_);
+  auto* addr = static_cast<char*>(buffer.addr);
+  if (base && addr >= base && addr < base + allocation_size_) {
+    auto offset = static_cast<size_t>(addr - base);
+    if (offset % config_.buffer_size == 0) {
+      auto index = offset / config_.buffer_size;
+      if (index < buffers_.size()) {
+        free_indices_.push(index);
+        outstanding_buffers_--;
+        buffer = urma_buffer_t{};
+        return;
+      }
     }
   }
+  ELOG_WARN << "return unknown URMA buffer: " << buffer.addr;
 #endif
 }
 
