@@ -478,15 +478,13 @@ class coro_rpc_server_base {
 #endif
       if (!result.has_value()) {
         auto error = result.error();
-        if (error == asio::error::operation_aborted) {
-          ELOG_INFO << "server was canceled:" << error.message();
+        if (error == asio::error::operation_aborted ||
+            error == asio::error::bad_descriptor) {
+          ELOG_DEBUG << "server accept stopped: " << error.message();
+          co_return coro_rpc::errc::operation_canceled;
         }
         else {
           ELOG_ERROR << "server accept failed:" << error.message();
-        }
-        if (error == asio::error::operation_aborted ||
-            error == asio::error::bad_descriptor) {
-          co_return coro_rpc::errc::operation_canceled;
         }
         continue;
       }

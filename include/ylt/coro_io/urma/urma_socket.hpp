@@ -276,6 +276,15 @@ struct urma_socket_shared_state_t
         auto ec = cr.status == URMA_CR_SUCCESS
                       ? std::error_code{}
                       : std::make_error_code(std::errc::io_error);
+        if (ec) {
+          ELOG_ERROR << "URMA completion failed: status="
+                     << static_cast<int>(cr.status)
+                     << ", direction=" << (cr.flag.bs.s_r ? "recv" : "send")
+                     << ", opcode=" << static_cast<int>(cr.opcode)
+                     << ", completion_len=" << cr.completion_len
+                     << ", user_ctx=" << cr.user_ctx
+                     << ", local_id=" << cr.local_id;
+        }
         if (cr.flag.bs.s_r == 0) {
           if (send_callbacks_.empty()) continue;
           auto pending = send_callbacks_.pop();
@@ -415,6 +424,7 @@ class urma_socket_t {
     uint32_t uasid;
     uint32_t jetty_id;
     uint32_t buffer_size;
+    uint16_t recv_buffer_cnt;
     uint8_t tp_type;
     constexpr static auto struct_pack_config = struct_pack::DISABLE_TYPE_INFO;
   };
@@ -442,6 +452,7 @@ class urma_socket_t {
     remote_address_ = std::move(other.remote_address_);
     remote_jetty_id_ = other.remote_jetty_id_;
     buffer_size_ = other.buffer_size_;
+    send_window_size_ = other.send_window_size_;
     remain_data_ = other.remain_data_;
     return *this;
   }
@@ -537,11 +548,15 @@ class urma_socket_t {
   }
 
   async_simple::coro::Lazy<std::error_code> waiting_write_over() {
-    return state_->wait_for_send_slot(conf_.send_buffer_cnt);
+    return state_->wait_for_send_slot(send_window_size_);
   }
 
   std::size_t sent_request_count() const noexcept {
     return state_->send_callbacks_.size();
+  }
+
+  std::size_t get_send_window_size() const noexcept {
+    return send_window_size_;
   }
 
   urma_buffer_t get_send_buffer() { return buffer_pool()->get_buffer(); }
@@ -652,6 +667,7 @@ class urma_socket_t {
     info.uasid = state_->jetty_->jetty_id.uasid;
     info.jetty_id = state_->jetty_->jetty_id.id;
     info.buffer_size = buffer_pool()->buffer_size();
+    info.recv_buffer_cnt = conf_.recv_buffer_cnt;
     info.tp_type = static_cast<uint8_t>(conf_.tp_type);
     return info;
   }
@@ -689,6 +705,15 @@ class urma_socket_t {
     remote_jetty_id_ = peer.jetty_id;
     buffer_size_ =
         std::min<uint32_t>(peer.buffer_size, buffer_pool()->buffer_size());
+    const auto remote_recv_capacity =
+        std::max<std::size_t>(peer.recv_buffer_cnt, 1);
+    send_window_size_ = std::min<std::size_t>(
+        conf_.send_buffer_cnt,
+        remote_recv_capacity > 1 ? remote_recv_capacity - 1 : 1);
+    ELOG_INFO << "URMA peer imported: remote_recv_buffer_cnt="
+              << peer.recv_buffer_cnt
+              << ", local_send_buffer_cnt=" << conf_.send_buffer_cnt
+              << ", effective_send_window=" << send_window_size_;
     remote_address_ = eid_to_address(peer.eid);
     return {};
   }
@@ -734,6 +759,7 @@ class urma_socket_t {
   asio::ip::address remote_address_;
   uint32_t remote_jetty_id_ = 0;
   uint32_t buffer_size_ = 0;
+  std::size_t send_window_size_ = 1;
   std::string_view remain_data_;
 };
 

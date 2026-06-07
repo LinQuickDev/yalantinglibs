@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <algorithm>
 #include <memory>
 #include <thread>
 
@@ -32,6 +33,28 @@ using namespace async_simple::coro;
 using namespace std::chrono_literals;
 
 std::string_view echo(std::string_view data) { return data; }
+
+void check_echo_result(const coro_rpc::rpc_result<std::string_view>& result,
+                       std::string_view expected) {
+  if (!result) {
+    ELOG_ERROR << "echo RPC failed: code=" << result.error().val()
+               << ", message=" << result.error().msg;
+    return;
+  }
+  if (result.value() == expected) {
+    ELOG_INFO << "echo ok!";
+    return;
+  }
+
+  auto actual = result.value();
+  auto mismatch = std::mismatch(actual.begin(), actual.end(), expected.begin(),
+                                expected.end());
+  auto mismatch_offset =
+      static_cast<std::size_t>(mismatch.first - actual.begin());
+  ELOG_ERROR << "echo data err: expected_size=" << expected.size()
+             << ", actual_size=" << actual.size()
+             << ", first_mismatch_offset=" << mismatch_offset;
+}
 
 // The basic example about how to start a rpc connection over URMA.
 void basic_example() {
@@ -63,12 +86,7 @@ void basic_example() {
 
   std::string data(1024 * 1024 * 10, 'A');
   auto result = syncAwait(client.call<echo>(data));
-  if (result != data) {
-    ELOG_ERROR << "echo data err";
-  }
-  else {
-    ELOG_INFO << "echo ok!";
-  }
+  check_echo_result(result, data);
   server.stop();
   return;
 }
@@ -134,12 +152,7 @@ void set_option() {
 
   std::string data(1024 * 1024 * 10, 'A');
   auto result = syncAwait(client.call<echo>(data));
-  if (result != data) {
-    ELOG_ERROR << "echo data err";
-  }
-  else {
-    ELOG_INFO << "echo ok!";
-  }
+  check_echo_result(result, data);
   server.stop();
 }
 

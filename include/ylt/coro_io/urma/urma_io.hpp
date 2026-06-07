@@ -95,7 +95,7 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
       buffers.front() += count;
       if (buffers.front().size() == 0) buffers.erase(buffers.begin());
     }
-    if (socket.sent_request_count() >= socket.get_config().send_buffer_cnt) {
+    if (socket.sent_request_count() >= socket.get_send_window_size()) {
       auto ec = co_await socket.waiting_write_over();
       if (ec) co_return std::pair{ec, completed};
     }

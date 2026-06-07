@@ -140,10 +140,13 @@ struct tcp_server_acceptor : public server_acceptor_base {
     auto error = co_await coro_io::async_accept(*acceptor_, socket);
     ELOG_TRACE << "get connection from acceptor: " << address_ << ":" << port_;
     if (error) {
-      ELOG_ERROR << "accept error: " << error.message();
       if (error == asio::error::operation_aborted ||
           error == asio::error::bad_descriptor) {
+        ELOG_DEBUG << "accept stopped: " << error.message();
         acceptor_close_waiter_.set_value();
+      }
+      else {
+        ELOG_ERROR << "accept error: " << error.message();
       }
       co_return ylt::expected<coro_io::socket_wrapper_t, std::error_code>{
           ylt::unexpected<std::error_code>{error}};
