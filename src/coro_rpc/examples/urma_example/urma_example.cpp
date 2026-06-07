@@ -85,7 +85,7 @@ void basic_example() {
   }
 
   std::string data(1024 * 1024 * 10, 'A');
-  auto result = syncAwait(client.call<echo>(data));
+  auto result = syncAwait(client.call_for<echo>(120s, data));
   check_echo_result(result, data);
   server.stop();
   return;
@@ -151,7 +151,7 @@ void set_option() {
   }
 
   std::string data(1024 * 1024 * 10, 'A');
-  auto result = syncAwait(client.call<echo>(data));
+  auto result = syncAwait(client.call_for<echo>(120s, data));
   check_echo_result(result, data);
   server.stop();
 }

@@ -1113,6 +1113,8 @@ class coro_rpc_client {
       co_return false;
     }
     if (auto self = socket_watcher.lock()) {
+      ELOG_WARN << err_msg << ", close socket by timeout"
+                << ", client_id: " << config_.client_id;
       self->is_timeout_ = is_timeout;
       close_socket_async(self);
       co_return true;

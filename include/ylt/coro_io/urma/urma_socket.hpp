@@ -450,7 +450,11 @@ class urma_socket_t {
     conf_ = std::move(other.conf_);
     state_ = std::move(other.state_);
     remote_address_ = std::move(other.remote_address_);
+    handshake_remote_address_ = std::move(other.handshake_remote_address_);
+    handshake_local_address_ = std::move(other.handshake_local_address_);
     remote_jetty_id_ = other.remote_jetty_id_;
+    handshake_remote_port_ = other.handshake_remote_port_;
+    handshake_local_port_ = other.handshake_local_port_;
     buffer_size_ = other.buffer_size_;
     send_window_size_ = other.send_window_size_;
     remain_data_ = other.remain_data_;
@@ -512,6 +516,7 @@ class urma_socket_t {
     auto [write_ec, ignored_write] =
         co_await async_write(state_->socket_, asio::buffer(bytes));
     if (write_ec) co_return write_ec;
+    record_handshake_endpoints();
     close_handshake_socket();
     state_->start_polling();
     co_return std::error_code{};
@@ -586,14 +591,20 @@ class urma_socket_t {
   }
 
   asio::ip::address get_remote_address() const noexcept {
-    return remote_address_;
+    return handshake_remote_port_ != 0 ? handshake_remote_address_
+                                       : remote_address_;
   }
-  uint32_t get_remote_qp_num() const noexcept { return remote_jetty_id_; }
+  uint32_t get_remote_qp_num() const noexcept {
+    return handshake_remote_port_ != 0 ? handshake_remote_port_
+                                       : remote_jetty_id_;
+  }
   asio::ip::address get_local_address() const noexcept {
-    return state_->device_->gid_address();
+    return handshake_local_port_ != 0 ? handshake_local_address_
+                                      : state_->device_->gid_address();
   }
   uint32_t get_local_qp_num() const noexcept {
-    return state_->jetty_->jetty_id.id;
+    return handshake_local_port_ != 0 ? handshake_local_port_
+                                      : state_->jetty_->jetty_id.id;
   }
 
   constexpr static uint32_t urma_md5_header =
@@ -736,9 +747,32 @@ class urma_socket_t {
       co_return std::make_error_code(std::errc::protocol_error);
     ec = import_peer(peer);
     if (ec) co_return ec;
+    record_handshake_endpoints();
     close_handshake_socket();
     state_->start_polling();
     co_return std::error_code{};
+  }
+
+  void record_handshake_endpoints() {
+    std::error_code remote_ec;
+    auto remote_ep = state_->socket_.remote_endpoint(remote_ec);
+    if (!remote_ec) {
+      handshake_remote_address_ = remote_ep.address();
+      handshake_remote_port_ = remote_ep.port();
+    }
+    std::error_code local_ec;
+    auto local_ep = state_->socket_.local_endpoint(local_ec);
+    if (!local_ec) {
+      handshake_local_address_ = local_ep.address();
+      handshake_local_port_ = local_ep.port();
+    }
+    ELOG_INFO << "URMA handshake TCP endpoint: remote="
+              << handshake_remote_address_.to_string() << ":"
+              << handshake_remote_port_ << ", local="
+              << handshake_local_address_.to_string() << ":"
+              << handshake_local_port_ << ", remote_jetty_id="
+              << remote_jetty_id_ << ", local_jetty_id="
+              << state_->jetty_->jetty_id.id;
   }
 
   void close_handshake_socket() {
@@ -757,7 +791,11 @@ class urma_socket_t {
   config_t conf_;
   std::shared_ptr<detail::urma_socket_shared_state_t> state_;
   asio::ip::address remote_address_;
+  asio::ip::address handshake_remote_address_;
+  asio::ip::address handshake_local_address_;
   uint32_t remote_jetty_id_ = 0;
+  uint32_t handshake_remote_port_ = 0;
+  uint32_t handshake_local_port_ = 0;
   uint32_t buffer_size_ = 0;
   std::size_t send_window_size_ = 1;
   std::string_view remain_data_;
