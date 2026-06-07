@@ -6,6 +6,7 @@ if (YLT_HAVE_IBVERBS)
 endif()
 if (YLT_ENABLE_URMA)
   add_subdirectory(urma_example)
+  add_subdirectory(urma_benchmark)
 endif()
 
 if (CORO_RPC_USE_OTHER_RPC)
