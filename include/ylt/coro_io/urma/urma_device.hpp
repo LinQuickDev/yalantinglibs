@@ -53,6 +53,8 @@ class urma_device_wrapper_t {
   const std::string& name() const { return name_; }
   int eid_index() const { return eid_index_; }
   const urma_eid_t& eid() const { return eid_; }
+  const urma_device_attr_t& attr() const { return device_attr_; }
+  uint32_t uasid() const { return context_ ? context_->uasid : 0; }
   uint32_t max_jetty() const { return device_attr_.dev_cap.max_jetty; }
   uint32_t max_jfc() const { return device_attr_.dev_cap.max_jfc; }
   bool supports_rm_rtp() const {

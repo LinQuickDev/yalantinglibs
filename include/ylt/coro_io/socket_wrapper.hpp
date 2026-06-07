@@ -129,22 +129,36 @@ struct socket_wrapper_t {
 #endif
 #ifdef YLT_ENABLE_URMA
   bool init_client(const coro_io::urma_socket_t::config_t &config) {
-    ELOG_DEBUG << "URMA init_client: executor_=" << executor_;
+    ELOG_INFO << "URMA init_client: executor=" << executor_
+              << ", device=" << config.device_name
+              << ", eid_index=" << config.eid_index
+              << ", tp_type=" << static_cast<int>(config.tp_type)
+              << ", cq_size=" << config.cq_size
+              << ", recv_buffer_cnt=" << config.recv_buffer_cnt
+              << ", send_buffer_cnt=" << config.send_buffer_cnt
+              << ", buffer_size=" << config.buffer_size;
     try {
       init_tcp_socket();
-      ELOG_DEBUG << "after init tcp socket" << executor_;
+      ELOG_DEBUG << "URMA init_client: TCP socket initialized";
       if (urma_socket_) {
-        ELOG_DEBUG << "have urma_socket_" << executor_;
+        ELOG_DEBUG << "URMA init_client: replacing existing URMA socket";
         *urma_socket_ = urma_socket_t(executor_, config);
-        ELOG_DEBUG << "after have urma_socket_" << executor_;
+        ELOG_DEBUG << "URMA init_client: existing URMA socket replaced";
       }
       else {
-        ELOG_DEBUG << "Before make unique" << executor_;
+        ELOG_DEBUG << "URMA init_client: constructing URMA socket";
         urma_socket_ = std::make_unique<urma_socket_t>(executor_, config);
-        ELOG_DEBUG << "After make unique" << executor_;
+        ELOG_DEBUG << "URMA init_client: URMA socket constructed";
       }
+    } catch (const std::system_error &e) {
+      ELOG_WARN << "init urma client failed: code=" << e.code().value()
+                << ", category=" << e.code().category().name()
+                << ", message=" << e.code().message()
+                << ", what=" << e.what();
+      init_ok_ = false;
+      return false;
     } catch (const std::exception &e) {
-      ELOG_WARN << "init urma client failed:" << e.what();
+      ELOG_WARN << "init urma client failed: " << e.what();
       init_ok_ = false;
       return false;
     }

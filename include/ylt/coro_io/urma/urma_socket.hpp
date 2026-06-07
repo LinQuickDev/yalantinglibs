@@ -104,13 +104,32 @@ struct urma_socket_shared_state_t
   }
 
   bool init(std::size_t cq_size, std::size_t send_buffer_cnt) {
+    const auto& cap = device_->attr().dev_cap;
+    ELOG_INFO << "URMA resource init: device=" << device_->name()
+              << ", eid=" << device_->eid_string()
+              << ", eid_index=" << device_->eid_index()
+              << ", uasid=" << device_->uasid()
+              << ", jfc_depth=" << cq_size
+              << ", jfr_depth=" << recv_buffer_cnt_ + 1
+              << ", jfs_depth=" << send_buffer_cnt + 2
+              << ", max_jfc_depth=" << cap.max_jfc_depth
+              << ", max_jfr_depth=" << cap.max_jfr_depth
+              << ", max_jfs_depth=" << cap.max_jfs_depth;
+
     urma_jfc_cfg_t jfc_cfg{};
     jfc_cfg.depth = static_cast<uint32_t>(cq_size);
+    errno = 0;
     jfc_.reset(urma_create_jfc(device_->context(), &jfc_cfg));
     if (!jfc_) {
-      ELOG_ERROR << "urma_create_jfc failed";
+      set_init_error("urma_create_jfc", errno);
+      ELOG_ERROR << "urma_create_jfc failed: depth=" << jfc_cfg.depth
+                 << ", context=" << device_->context()
+                 << ", errno=" << init_error_.value()
+                 << ", error=" << init_error_.message();
       return false;
     }
+    ELOG_INFO << "urma_create_jfc succeeded: jfc_id="
+              << jfc_->jfc_id.id << ", depth=" << jfc_cfg.depth;
 
     urma_jfr_cfg_t jfr_cfg{};
     jfr_cfg.depth = static_cast<uint32_t>(recv_buffer_cnt_ + 1);
@@ -118,11 +137,20 @@ struct urma_socket_shared_state_t
     jfr_cfg.max_sge = 1;
     jfr_cfg.min_rnr_timer = URMA_TYPICAL_MIN_RNR_TIMER;
     jfr_cfg.jfc = jfc_.get();
+    errno = 0;
     jfr_.reset(urma_create_jfr(device_->context(), &jfr_cfg));
     if (!jfr_) {
-      ELOG_ERROR << "urma_create_jfr failed";
+      set_init_error("urma_create_jfr", errno);
+      ELOG_ERROR << "urma_create_jfr failed: depth=" << jfr_cfg.depth
+                 << ", trans_mode=" << static_cast<int>(jfr_cfg.trans_mode)
+                 << ", max_sge=" << static_cast<unsigned>(jfr_cfg.max_sge)
+                 << ", jfc=" << jfr_cfg.jfc
+                 << ", errno=" << init_error_.value()
+                 << ", error=" << init_error_.message();
       return false;
     }
+    ELOG_INFO << "urma_create_jfr succeeded: jfr_id="
+              << jfr_->jfr_id.id << ", depth=" << jfr_cfg.depth;
 
     urma_jetty_cfg_t jetty_cfg{};
     jetty_cfg.flag.bs.share_jfr = 1;
@@ -135,12 +163,34 @@ struct urma_socket_shared_state_t
     jetty_cfg.jfs_cfg.err_timeout = URMA_TYPICAL_ERR_TIMEOUT;
     jetty_cfg.jfs_cfg.jfc = jfc_.get();
     jetty_cfg.shared.jfr = jfr_.get();
+    jetty_cfg.shared.jfc = jfc_.get();
+    errno = 0;
     jetty_.reset(urma_create_jetty(device_->context(), &jetty_cfg));
     if (!jetty_) {
-      ELOG_ERROR << "urma_create_jetty failed";
+      set_init_error("urma_create_jetty", errno);
+      ELOG_ERROR << "urma_create_jetty failed: jfs_depth="
+                 << jetty_cfg.jfs_cfg.depth
+                 << ", trans_mode="
+                 << static_cast<int>(jetty_cfg.jfs_cfg.trans_mode)
+                 << ", priority="
+                 << static_cast<unsigned>(jetty_cfg.jfs_cfg.priority)
+                 << ", shared_jfr=" << jetty_cfg.shared.jfr
+                 << ", jfc=" << jetty_cfg.jfs_cfg.jfc
+                 << ", errno=" << init_error_.value()
+                 << ", error=" << init_error_.message();
       return false;
     }
+    ELOG_INFO << "urma_create_jetty succeeded: jetty_id="
+              << jetty_->jetty_id.id << ", uasid="
+              << jetty_->jetty_id.uasid;
     return true;
+  }
+
+  void set_init_error(std::string_view stage, int error) {
+    init_stage_ = stage;
+    init_error_ =
+        error != 0 ? std::error_code(error, std::generic_category())
+                   : std::make_error_code(std::errc::io_error);
   }
 
   std::error_code post_recv(urma_buffer_t buffer) {
@@ -339,6 +389,8 @@ struct urma_socket_shared_state_t
   std::optional<async_simple::Promise<std::error_code>> write_promise_;
   std::atomic<bool> has_close_{false};
   bool peer_close_ = false;
+  std::string init_stage_;
+  std::error_code init_error_;
 };
 
 }  // namespace detail
@@ -535,6 +587,14 @@ class urma_socket_t {
 
  private:
   void init(config_t config) {
+    ELOG_INFO << "URMA socket init requested: device=" << config.device_name
+              << ", eid_index=" << config.eid_index
+              << ", tp_type=" << static_cast<int>(config.tp_type)
+              << ", cq_size=" << config.cq_size
+              << ", recv_buffer_cnt=" << config.recv_buffer_cnt
+              << ", send_buffer_cnt=" << config.send_buffer_cnt
+              << ", buffer_size=" << config.buffer_size
+              << ", executor=" << executor_;
     config.recv_buffer_cnt = std::max<uint16_t>(config.recv_buffer_cnt, 1);
     config.send_buffer_cnt = std::max<uint16_t>(config.send_buffer_cnt, 1);
     config.cq_size =
@@ -548,20 +608,42 @@ class urma_socket_t {
     if (!device || !device->is_valid() || !device->get_buffer_pool())
       throw std::system_error(
           std::make_error_code(std::errc::no_such_device));
-    if (conf_.tp_type == URMA_CTP && !device->supports_rm_ctp())
-      throw std::system_error(
-          std::make_error_code(std::errc::operation_not_supported));
-    if (conf_.tp_type == URMA_RTP && !device->supports_rm_rtp())
-      throw std::system_error(
-          std::make_error_code(std::errc::operation_not_supported));
+    const auto& cap = device->attr().dev_cap;
+    ELOG_INFO << "URMA device capabilities: device=" << device->name()
+              << ", rm_tp_cap=" << cap.rm_tp_cap.value
+              << ", rtp=" << cap.rm_tp_cap.bs.rtp
+              << ", ctp=" << cap.rm_tp_cap.bs.ctp
+              << ", ctp_en=" << cap.feature.bs.ctp_en
+              << ", trans_mode=" << cap.trans_mode
+              << ", max_jfc=" << cap.max_jfc
+              << ", max_jfr=" << cap.max_jfr
+              << ", max_jetty=" << cap.max_jetty;
+    if (conf_.tp_type == URMA_CTP && !device->supports_rm_ctp()) {
+      ELOG_WARN << "URMA device capability does not report RM CTP support; "
+                   "continuing because some providers expose CTP through "
+                   "feature.ctp_en or resource creation";
+    }
+    if (conf_.tp_type == URMA_RTP && !device->supports_rm_rtp()) {
+      ELOG_WARN << "URMA device capability does not report RM RTP support; "
+                   "continuing and relying on resource creation";
+    }
     buffer_size_ = std::min<uint32_t>(
         conf_.buffer_size, device->get_buffer_pool()->buffer_size());
     state_ = std::make_shared<detail::urma_socket_shared_state_t>(
         std::move(device), executor_, conf_.recv_buffer_cnt,
         conf_.send_buffer_cnt, conf_.cq_size);
-    if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt))
-      throw std::system_error(
-          std::make_error_code(std::errc::operation_not_supported));
+    if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt)) {
+      auto stage = state_->init_stage_;
+      auto error = state_->init_error_;
+      ELOG_ERROR << "URMA socket resource initialization failed: stage="
+                 << stage << ", errno=" << error.value()
+                 << ", error=" << error.message();
+      state_.reset();
+      throw std::system_error(error, stage);
+    }
+    ELOG_INFO << "URMA socket init succeeded: device="
+              << state_->device_->name() << ", jetty_id="
+              << state_->jetty_->jetty_id.id;
   }
 
   urma_socket_info make_local_info() const {
