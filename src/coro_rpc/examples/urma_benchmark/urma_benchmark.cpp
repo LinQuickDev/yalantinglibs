@@ -134,6 +134,7 @@ options_t parse_options(int argc, char** argv) {
     throw std::invalid_argument("role must be server or client");
   }
 
+  bool host_was_set = false;
   for (int i = 2; i < argc; ++i) {
     std::string_view key = argv[i];
     auto require_value = [&]() -> std::string_view {
@@ -149,6 +150,7 @@ options_t parse_options(int argc, char** argv) {
     }
     else if (key == "--host") {
       opt.host = require_value();
+      host_was_set = true;
     }
     else if (key == "--port") {
       opt.port = static_cast<uint16_t>(parse_u64(require_value(), key));
@@ -212,6 +214,9 @@ options_t parse_options(int argc, char** argv) {
   opt.concurrency = std::max<uint32_t>(opt.concurrency, 1);
   opt.connections = std::max<uint32_t>(opt.connections, 1);
   opt.queue_depth = std::max<uint16_t>(opt.queue_depth, 1);
+  if (opt.role == "server" && !host_was_set) {
+    opt.host = "0.0.0.0";
+  }
   return opt;
 }
 
@@ -258,7 +263,11 @@ Lazy<bool> connect_client(coro_rpc_client& client, const options_t& opt,
             << opt.host << ":" << opt.port << std::endl;
   auto ec = co_await client.connect(opt.host, std::to_string(opt.port), 30s);
   if (ec) {
-    ELOG_ERROR << "connect failed: " << ec.message();
+    ELOG_ERROR << "connect failed: " << ec.message()
+               << ". Check that the server process is running, listening on "
+               << "0.0.0.0 or the requested NIC address, and that the TCP "
+               << "handshake port is reachable: " << opt.host << ":"
+               << opt.port;
     co_return false;
   }
   std::cout << "[urma_benchmark] client " << client_index << " connected"

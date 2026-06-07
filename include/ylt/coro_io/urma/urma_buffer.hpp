@@ -83,6 +83,9 @@ class urma_buffer_pool_t {
   size_t allocation_size_ = 0;
   void* seg_ = nullptr;  // urma_target_seg_t*
   std::vector<urma_buffer_t> buffers_;
+#ifdef YLT_ENABLE_URMA
+  std::vector<urma_target_seg_t> slice_segs_;
+#endif
   std::vector<uint8_t> in_use_;
   std::queue<size_t> free_indices_;
   mutable std::mutex mutex_;
@@ -159,9 +162,22 @@ inline bool urma_buffer_pool_t::init_buffers() {
 
   auto* base = static_cast<char*>(base_addr_);
   in_use_.assign(config_.buffer_count, 0);
+#ifdef YLT_ENABLE_URMA
+  slice_segs_.resize(config_.buffer_count);
+#endif
   for (size_t i = 0; i < config_.buffer_count; ++i) {
-    buffers_.push_back(urma_buffer_t(base + i * config_.buffer_size,
-                                     config_.buffer_size, seg_));
+    auto* addr = base + i * config_.buffer_size;
+#ifdef YLT_ENABLE_URMA
+    slice_segs_[i] = *static_cast<urma_target_seg_t*>(seg_);
+    slice_segs_[i].seg.ubva.va = reinterpret_cast<uint64_t>(addr);
+    slice_segs_[i].seg.len = config_.buffer_size;
+    slice_segs_[i].user_ctx = reinterpret_cast<uint64_t>(addr);
+    auto* buffer_seg = &slice_segs_[i];
+#else
+    auto* buffer_seg = seg_;
+#endif
+    buffers_.push_back(
+        urma_buffer_t(addr, config_.buffer_size, buffer_seg));
     free_indices_.push(i);
   }
 
@@ -190,6 +206,9 @@ inline urma_buffer_pool_t::~urma_buffer_pool_t() {
   }
   allocation_size_ = 0;
   buffers_.clear();
+#ifdef YLT_ENABLE_URMA
+  slice_segs_.clear();
+#endif
   in_use_.clear();
 #endif
 }

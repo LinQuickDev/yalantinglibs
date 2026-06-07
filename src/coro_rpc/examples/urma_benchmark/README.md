@@ -116,7 +116,8 @@ Throughput only:
 ## Common Options
 
 ```text
---host <ip>              Server listen/connect host. Default 127.0.0.1
+--host <ip>              Server listen/connect host. Server default 0.0.0.0,
+                         client default 127.0.0.1
 --port <port>            Server port. Default 9001
 --device <name>          URMA device. Default bonding_dev_0
 --eid-index <n>          URMA EID index. Default 0
@@ -147,6 +148,9 @@ Server-only option:
 ## Notes
 
 - The default URMA transport type is CTP.
+- Server mode defaults to `--host 0.0.0.0`, so cross-node tests work without
+  explicitly overriding the listen address. Client mode defaults to
+  `127.0.0.1`.
 - The default `--buffer-size` is `4096`, matching the documented 4KB max send
   packet size for `bonding_dev_0` CTP.
 - The URMA buffer pool allocates one large contiguous memory block and registers
