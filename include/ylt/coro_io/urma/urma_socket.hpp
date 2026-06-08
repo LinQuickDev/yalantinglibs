@@ -268,13 +268,16 @@ struct urma_socket_shared_state_t
     }
   }
 
-  std::error_code poll_completion() {
+  std::pair<std::error_code, std::size_t> poll_completion() {
     std::array<urma_cr_t, 16> completions{};
     int count = 0;
+    std::size_t polled = 0;
     do {
       count = urma_poll_jfc(jfc_.get(), static_cast<int>(completions.size()),
                             completions.data());
-      if (count < 0) return std::make_error_code(std::errc::io_error);
+      if (count < 0)
+        return {std::make_error_code(std::errc::io_error), polled};
+      polled += static_cast<std::size_t>(count);
       for (int i = 0; i < count; ++i) {
         auto& cr = completions[i];
         auto ec = cr.status == URMA_CR_SUCCESS
@@ -300,7 +303,7 @@ struct urma_socket_shared_state_t
         }
 
         if (recv_queue_.empty())
-          return std::make_error_code(std::errc::protocol_error);
+          return {std::make_error_code(std::errc::protocol_error), polled};
         if (cr.completion_len == 0) {
           peer_close_ = true;
           has_close_ = true;
@@ -327,28 +330,48 @@ struct urma_socket_shared_state_t
             ELOG_ERROR << "URMA recv result queue is full; cannot cache "
                           "completed recv buffer";
             device_->get_buffer_pool()->return_buffer(completed_buffer);
-            return std::make_error_code(std::errc::no_buffer_space);
+            return {std::make_error_code(std::errc::no_buffer_space), polled};
           }
           recv_result_.push(
               pending_recv{{ec, cr.completion_len}, std::move(completed_buffer)});
         }
       }
     } while (count == static_cast<int>(completions.size()));
-    return {};
+    return {{}, polled};
   }
 
   void start_polling() {
     auto self = shared_from_this();
-    poll_timer_.expires_after(std::chrono::microseconds(50));
+    poll_timer_.expires_after(idle_poll_interval_);
     poll_timer_.async_wait([self](const std::error_code& ec) {
       if (ec || self->has_close_) return;
-      auto poll_ec = self->poll_completion();
-      if (poll_ec) {
-        self->fail_pending(poll_ec);
-        self->close();
-        return;
-      }
-      self->start_polling();
+      self->poll_once();
+    });
+  }
+
+  void poll_once() {
+    if (has_close_) return;
+    auto [poll_ec, completion_count] = poll_completion();
+    if (poll_ec) {
+      fail_pending(poll_ec);
+      close();
+      return;
+    }
+    if (completion_count == 0) {
+      active_poll_budget_ = max_active_poll_budget_;
+      start_polling();
+      return;
+    }
+    if (active_poll_budget_ == 0) {
+      active_poll_budget_ = max_active_poll_budget_;
+      start_polling();
+      return;
+    }
+    --active_poll_budget_;
+    auto self = shared_from_this();
+    asio::post(executor_->get_asio_executor(), [self] {
+      if (self->has_close_) return;
+      self->poll_once();
     });
   }
 
@@ -416,6 +439,9 @@ struct urma_socket_shared_state_t
   std::optional<async_simple::Promise<std::error_code>> write_promise_;
   std::atomic<bool> has_close_{false};
   bool peer_close_ = false;
+  static constexpr std::chrono::microseconds idle_poll_interval_{50};
+  static constexpr std::size_t max_active_poll_budget_ = 64;
+  std::size_t active_poll_budget_ = max_active_poll_budget_;
   std::string init_stage_;
   std::error_code init_error_;
 };
