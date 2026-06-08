@@ -17,8 +17,12 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
+#include <optional>
+#include <queue>
 #include <vector>
 
+#include "async_simple/Promise.h"
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/coro_io/urma/urma_socket.hpp"
 
@@ -31,6 +35,31 @@ void make_urma_buffers(std::vector<AsioBuffer>& result,
   auto first = asio::buffer_sequence_begin(buffers);
   auto last = asio::buffer_sequence_end(buffers);
   for (; first != last; ++first) result.emplace_back(*first);
+}
+
+struct urma_write_completion_state {
+  std::queue<std::pair<std::error_code, std::size_t>> completions;
+  std::optional<async_simple::Promise<void>> waiter;
+
+  void push(std::pair<std::error_code, std::size_t> result) {
+    completions.push(result);
+    if (!waiter) return;
+    auto promise = std::move(*waiter);
+    waiter.reset();
+    promise.setValue();
+  }
+};
+
+inline async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>>
+wait_urma_write_completion(
+    const std::shared_ptr<urma_write_completion_state>& state) {
+  while (state->completions.empty()) {
+    state->waiter.emplace();
+    co_await state->waiter->getFuture();
+  }
+  auto result = state->completions.front();
+  state->completions.pop();
+  co_return result;
 }
 
 template <typename Buffer>
@@ -85,11 +114,13 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
   ELOG_DEBUG << "URMA async_write start: total_size=" << total_size
              << ", chunk_size=" << socket.get_buffer_size()
              << ", send_window=" << socket.get_send_window_size();
-  while (!buffers.empty()) {
+  auto state = std::make_shared<detail::urma_write_completion_state>();
+  std::size_t in_flight = 0;
+  auto post_next = [&]() -> std::pair<std::error_code, bool> {
+    if (buffers.empty()) return {{}, false};
     auto buffer = socket.get_send_buffer();
     if (!buffer)
-      co_return std::pair{
-          std::make_error_code(std::errc::no_buffer_space), completed};
+      return {std::make_error_code(std::errc::no_buffer_space), false};
     std::size_t length = 0;
     while (!buffers.empty() && length < socket.get_buffer_size()) {
       auto count = std::min<std::size_t>(
@@ -100,19 +131,29 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
       buffers.front() += count;
       if (buffers.front().size() == 0) buffers.erase(buffers.begin());
     }
-    if (socket.sent_request_count() >= socket.get_send_window_size()) {
-      auto ec = co_await socket.waiting_write_over();
-      if (ec) co_return std::pair{ec, completed};
+    socket.post_send(std::move(buffer), length,
+                     [state](std::pair<std::error_code, std::size_t> result) {
+                       state->push(result);
+                     });
+    ++in_flight;
+    return {{}, true};
+  };
+
+  const auto send_window = std::max<std::size_t>(socket.get_send_window_size(), 1);
+  while (!buffers.empty() || in_flight != 0) {
+    while (!buffers.empty() && in_flight < send_window) {
+      auto [ec, posted] = post_next();
+      if (ec) {
+        if (in_flight == 0) co_return std::pair{ec, completed};
+        break;
+      }
+      if (!posted) break;
     }
-    auto result =
-        co_await async_io<std::pair<std::error_code, std::size_t>>(
-            [&](auto&& callback) {
-              socket.post_send(std::move(buffer), length,
-                               std::move(callback));
-            },
-            socket);
+    if (in_flight == 0) continue;
+    auto result = co_await detail::wait_urma_write_completion(state);
+    --in_flight;
     if (result.first) co_return std::pair{result.first, completed};
-    completed += length;
+    completed += result.second;
   }
   ELOG_DEBUG << "URMA async_write done: total_size=" << total_size
              << ", completed=" << completed;
