@@ -121,6 +121,8 @@ Throughput only:
 --payload <bytes>        Echo payload size. Default 64
 --buffer-size <bytes>    URMA SEND chunk size. Default 4096 for CTP
 --queue-depth <n>        URMA send/recv queue depth. Default 64
+--max-memory-mib <n>     URMA buffer pool memory per process. Default 256,
+                         auto-raised when payload/connections need more
 --log <trace|debug|info|warn|error> Default info
 ```
 
@@ -153,6 +155,9 @@ Server-only option:
 - The URMA buffer pool allocates one large contiguous memory block and registers
   it as one segment, then splits it into fixed-size buffers. This avoids doing
   one `urma_register_seg` call per 4KB buffer during startup.
+- The benchmark sizes the pool from `--max-memory-mib`, `--connections`,
+  `--queue-depth`, and `--payload`. If the explicit memory value is too small,
+  it is raised automatically for the benchmark process.
 - `--connections` controls the number of RPC client connections and throughput
   workers. Each throughput worker owns one `coro_rpc_client` and sends serial
   requests on that connection.

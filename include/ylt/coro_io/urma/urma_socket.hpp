@@ -429,6 +429,7 @@ class urma_socket_t {
     uint16_t recv_buffer_cnt = 8;
     uint16_t send_buffer_cnt = 4;
     uint32_t buffer_size = 4 * 1024;
+    uint64_t max_memory_usage = 256ull * 1024 * 1024;
     std::string device_name;
     int eid_index = 0;
     urma_tp_type_t tp_type = URMA_CTP;
@@ -636,6 +637,7 @@ class urma_socket_t {
               << ", recv_buffer_cnt=" << config.recv_buffer_cnt
               << ", send_buffer_cnt=" << config.send_buffer_cnt
               << ", buffer_size=" << config.buffer_size
+              << ", max_memory_usage=" << config.max_memory_usage
               << ", executor=" << executor_;
     constexpr uint32_t ctp_max_send_size = 4 * 1024;
     if (config.tp_type == URMA_CTP && config.buffer_size > ctp_max_send_size) {
@@ -653,7 +655,9 @@ class urma_socket_t {
     conf_ = std::move(config);
     auto device = get_global_urma_device(
         {.dev_name = conf_.device_name,
-         .buffer_pool_config = {.buffer_size = conf_.buffer_size},
+         .buffer_pool_config = {.buffer_size = conf_.buffer_size,
+                                .max_memory_usage =
+                                    conf_.max_memory_usage},
          .eid_index = conf_.eid_index});
     if (!device || !device->is_valid() || !device->get_buffer_pool())
       throw std::system_error(

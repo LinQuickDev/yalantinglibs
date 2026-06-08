@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -85,6 +86,7 @@ void print_usage(const char* program) {
       << "  --payload <bytes>        Echo payload size. Default 64\n"
       << "  --buffer-size <bytes>    URMA SEND chunk size. Default 4096 for CTP\n"
       << "  --queue-depth <n>        URMA send/recv queue depth. Default 64\n"
+      << "  --max-memory-mib <n>     URMA buffer pool memory per process. Default 256, auto-raised when needed\n"
       << "  --log <trace|debug|info|warn|error> Default info\n\n"
       << "Client options:\n"
       << "  --mode <latency|throughput|both> Default both\n"
@@ -170,6 +172,9 @@ options_t parse_options(int argc, char** argv) {
     else if (key == "--queue-depth") {
       opt.queue_depth = static_cast<uint16_t>(parse_u64(require_value(), key));
     }
+    else if (key == "--max-memory-mib") {
+      opt.max_memory_usage = parse_u64(require_value(), key) * 1024 * 1024;
+    }
     else if (key == "--mode") {
       opt.mode = require_value();
     }
@@ -220,12 +225,46 @@ options_t parse_options(int argc, char** argv) {
   return opt;
 }
 
+uint64_t saturated_mul(uint64_t lhs, uint64_t rhs) {
+  if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return lhs * rhs;
+}
+
+uint64_t ceil_div(uint64_t value, uint64_t divisor) {
+  return divisor == 0 ? value : (value + divisor - 1) / divisor;
+}
+
+uint64_t estimated_pool_memory_usage(const options_t& opt) {
+  auto buffer_size = std::max<uint64_t>(opt.buffer_size, 1);
+  auto connections = std::max<uint64_t>(opt.connections, 1);
+  auto queue_depth = std::max<uint64_t>(opt.queue_depth, 1);
+  auto payload_chunks =
+      ceil_div(static_cast<uint64_t>(opt.payload_size) + 1024, buffer_size);
+
+  // Each connection keeps recv WRs posted and can also cache completed recv
+  // buffers while the RPC layer consumes a large message. Keep enough slack for
+  // send completions and protocol framing without requiring users to guess.
+  auto payload_slack = std::min<uint64_t>(payload_chunks, queue_depth);
+  auto buffers_per_connection =
+      queue_depth * 2 + queue_depth + payload_slack + 16;
+  auto required_buffers =
+      saturated_mul(connections, buffers_per_connection) + 1024;
+  return saturated_mul(required_buffers, buffer_size);
+}
+
+uint64_t effective_pool_memory_usage(const options_t& opt) {
+  return std::max(opt.max_memory_usage, estimated_pool_memory_usage(opt));
+}
+
 coro_io::urma_socket_t::config_t make_urma_config(const options_t& opt) {
   return coro_io::urma_socket_t::config_t{
       .cq_size = static_cast<uint32_t>(opt.queue_depth * 2 + 8),
       .recv_buffer_cnt = opt.queue_depth,
       .send_buffer_cnt = opt.queue_depth,
       .buffer_size = opt.buffer_size,
+      .max_memory_usage = effective_pool_memory_usage(opt),
       .device_name = opt.device,
       .eid_index = opt.eid_index,
       .tp_type = URMA_CTP};
@@ -233,12 +272,19 @@ coro_io::urma_socket_t::config_t make_urma_config(const options_t& opt) {
 
 bool init_global_urma(const options_t& opt) {
   status("initializing global URMA device");
+  auto pool_memory = effective_pool_memory_usage(opt);
+  if (pool_memory > opt.max_memory_usage) {
+    std::cout << "[urma_benchmark] auto raise URMA buffer pool memory from "
+              << opt.max_memory_usage / 1024 / 1024 << " MiB to "
+              << pool_memory / 1024 / 1024
+              << " MiB for payload/connections/queue-depth" << std::endl;
+  }
   auto device = coro_io::get_global_urma_device(coro_io::urma_init_config_t{
       .dev_name = opt.device,
       .buffer_pool_config =
           {
               .buffer_size = opt.buffer_size,
-              .max_memory_usage = opt.max_memory_usage,
+              .max_memory_usage = pool_memory,
               .idle_timeout = 5s,
           },
       .eid_index = opt.eid_index});
@@ -247,7 +293,12 @@ bool init_global_urma(const options_t& opt) {
               << std::endl;
     return false;
   }
-  status("global URMA device initialized");
+  auto pool = device->get_buffer_pool();
+  std::cout << "[urma_benchmark] global URMA device initialized, pool_buffers="
+            << pool->total_buffer_count()
+            << ", pool_free=" << pool->free_buffer_count()
+            << ", pool_memory_mib="
+            << pool->total_memory_size() / 1024 / 1024 << std::endl;
   return true;
 }
 
@@ -417,7 +468,9 @@ int run_server(const options_t& opt) {
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth << std::endl;
+            << ", queue_depth=" << opt.queue_depth
+            << ", max_memory_mib="
+            << effective_pool_memory_usage(opt) / 1024 / 1024 << std::endl;
   if (!init_global_urma(opt)) return 1;
   status("constructing RPC server");
   coro_rpc_server server(opt.server_threads, opt.port, opt.host);
@@ -427,7 +480,9 @@ int run_server(const options_t& opt) {
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth << std::endl;
+            << ", queue_depth=" << opt.queue_depth
+            << ", max_memory_mib="
+            << effective_pool_memory_usage(opt) / 1024 / 1024 << std::endl;
   status("entering server event loop");
   return !server.start();
 }
@@ -438,6 +493,8 @@ int run_client(const options_t& opt) {
             << ", payload=" << opt.payload_size
             << ", buffer_size=" << opt.buffer_size
             << ", queue_depth=" << opt.queue_depth
+            << ", max_memory_mib="
+            << effective_pool_memory_usage(opt) / 1024 / 1024
             << ", connections=" << opt.connections
             << ", concurrency=" << opt.concurrency << std::endl;
   coro_io::get_global_executor(opt.client_threads);

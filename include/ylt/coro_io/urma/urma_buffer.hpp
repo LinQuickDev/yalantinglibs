@@ -62,7 +62,11 @@ class urma_buffer_pool_t {
 
   size_t buffer_size() const { return config_.buffer_size; }
   size_t total_buffer_count() const { return config_.buffer_count; }
+  size_t total_memory_size() const { return allocation_size_; }
   size_t free_buffer_count() const;
+  size_t outstanding_buffer_count() const {
+    return outstanding_buffers_.load(std::memory_order_relaxed);
+  }
   bool memory_out_of_limit() const { return free_buffer_count() == 0; }
   void* context() const { return ctx_; }
 
@@ -217,7 +221,12 @@ inline urma_buffer_t urma_buffer_pool_t::get_buffer(int gpu_id) {
 #ifdef YLT_ENABLE_URMA
   std::lock_guard<std::mutex> lock(mutex_);
   if (free_indices_.empty()) {
-    ELOG_WARN << "URMA buffer pool out of buffers";
+    ELOG_WARN << "URMA buffer pool out of buffers: total="
+              << buffers_.size()
+              << ", outstanding="
+              << outstanding_buffers_.load(std::memory_order_relaxed)
+              << ", buffer_size=" << config_.buffer_size
+              << ", total_memory=" << allocation_size_;
     return urma_buffer_t{};
   }
   size_t idx = free_indices_.front();

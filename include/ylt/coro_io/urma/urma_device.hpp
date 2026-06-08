@@ -140,17 +140,26 @@ inline urma_device_wrapper_t::~urma_device_wrapper_t() { close(); }
 inline bool urma_device_wrapper_t::configure_buffer_pool(
     std::size_t buffer_size, std::size_t max_memory_usage) {
   if (!context_ || buffer_size == 0) return false;
+  auto requested_buffer_count =
+      std::max<std::size_t>(1, max_memory_usage / buffer_size);
   if (buffer_pool_) {
-    if (buffer_pool_->buffer_size() == buffer_size) return true;
+    if (buffer_pool_->buffer_size() == buffer_size &&
+        buffer_pool_->total_buffer_count() >= requested_buffer_count) {
+      return true;
+    }
     if (buffer_pool_->free_buffer_count() !=
         buffer_pool_->total_buffer_count()) {
-      ELOG_WARN << "cannot resize an in-use URMA buffer pool";
+      ELOG_WARN << "cannot resize an in-use URMA buffer pool: current_size="
+                << buffer_pool_->buffer_size()
+                << ", current_count=" << buffer_pool_->total_buffer_count()
+                << ", requested_size=" << buffer_size
+                << ", requested_count=" << requested_buffer_count;
       return false;
     }
   }
-  auto buffer_count = std::max<std::size_t>(1, max_memory_usage / buffer_size);
   buffer_pool_ =
-      std::make_shared<urma_buffer_pool_t>(context_, buffer_size, buffer_count);
+      std::make_shared<urma_buffer_pool_t>(context_, buffer_size,
+                                           requested_buffer_count);
   return buffer_pool_->total_buffer_count() != 0;
 }
 
