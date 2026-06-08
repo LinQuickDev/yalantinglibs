@@ -79,6 +79,11 @@ struct urma_socket_shared_state_t
     callback_t callback;
   };
 
+  struct pending_recv {
+    std::pair<std::error_code, std::size_t> result;
+    urma_buffer_t buffer;
+  };
+
   urma_socket_shared_state_t(std::shared_ptr<urma_device_wrapper_t> device,
                              ExecutorWrapper<>* executor,
                              std::size_t recv_buffer_cnt,
@@ -250,10 +255,9 @@ struct urma_socket_shared_state_t
 
   void async_receive(callback_t&& callback) {
     if (!recv_result_.empty()) {
-      auto result = recv_result_.pop();
-      recv_buffer_ = recv_queue_.pop();
-      fill_recv_queue();
-      resume(std::move(result), std::move(callback));
+      auto pending = recv_result_.pop();
+      recv_buffer_ = std::move(pending.buffer);
+      resume(std::move(pending.result), std::move(callback));
     }
     else if (has_close_) {
       resume({std::make_error_code(std::errc::operation_canceled), 0},
@@ -306,13 +310,27 @@ struct urma_socket_shared_state_t
           }
           continue;
         }
+        auto completed_buffer = recv_queue_.pop();
+        auto refill_ec = fill_recv_queue();
+        if (refill_ec) {
+          ELOG_ERROR << "URMA refill recv queue failed: "
+                     << refill_ec.message()
+                     << ", recv_queue_size=" << recv_queue_.size()
+                     << ", recv_buffer_cnt=" << recv_buffer_cnt_;
+        }
         if (recv_callback_) {
-          recv_buffer_ = recv_queue_.pop();
-          fill_recv_queue();
+          recv_buffer_ = std::move(completed_buffer);
           resume({ec, cr.completion_len}, std::move(recv_callback_));
         }
         else {
-          recv_result_.push({ec, cr.completion_len});
+          if (recv_result_.full()) {
+            ELOG_ERROR << "URMA recv result queue is full; cannot cache "
+                          "completed recv buffer";
+            device_->get_buffer_pool()->return_buffer(completed_buffer);
+            return std::make_error_code(std::errc::no_buffer_space);
+          }
+          recv_result_.push(
+              pending_recv{{ec, cr.completion_len}, std::move(completed_buffer)});
         }
       }
     } while (count == static_cast<int>(completions.size()));
@@ -391,7 +409,7 @@ struct urma_socket_shared_state_t
   std::unique_ptr<urma_target_jetty_t, urma_deleter> remote_jetty_;
   std::size_t recv_buffer_cnt_;
   circle_buffer<urma_buffer_t> recv_queue_;
-  circle_buffer<std::pair<std::error_code, std::size_t>> recv_result_;
+  circle_buffer<pending_recv> recv_result_;
   circle_buffer<pending_send> send_callbacks_;
   callback_t recv_callback_;
   urma_buffer_t recv_buffer_;

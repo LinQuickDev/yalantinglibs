@@ -65,7 +65,7 @@ struct options_t {
   uint16_t queue_depth = 64;
   uint32_t buffer_size = 4 * 1024;
   uint64_t max_memory_usage = 256ull * 1024 * 1024;
-  easylog::Severity log_level = easylog::Severity::INFO;
+  easylog::Severity log_level = easylog::Severity::WARNING;
 };
 
 void status(std::string_view message) {
