@@ -130,6 +130,8 @@ Client-only options:
 
 ```text
 --mode <latency|throughput|both>
+--rpc <echo|sink> Echo returns the payload. Sink returns only payload size and
+                  is useful for isolating request-ingress throughput.
 --latency-iters <n>
 --warmup-iters <n>
 --connections <n>
@@ -166,3 +168,7 @@ Server-only option:
   overrun the current URMA send/recv credit model and produce `WR_FLUSH_ERR`.
 - Latency output is in microseconds and includes avg/min/p50/p90/p99/p999/max.
 - Throughput output includes request rate and payload MiB/s.
+- Use `--rpc sink` to remove the large echo response from the server side. If
+  sink throughput is much higher than echo, the bottleneck is response
+  serialization/sending. If sink is also low, focus on request read, RPC
+  dispatch, and URMA receive/polling.
