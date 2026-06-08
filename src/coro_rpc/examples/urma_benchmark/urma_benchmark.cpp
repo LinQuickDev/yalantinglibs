@@ -66,6 +66,7 @@ struct options_t {
   uint32_t concurrency = 64;
   uint32_t connections = 64;
   uint32_t duration_seconds = 10;
+  uint32_t raw_report_interval_seconds = 0;
   uint32_t server_threads = std::max(1u, std::thread::hardware_concurrency());
   uint32_t client_threads = std::max(1u, std::thread::hardware_concurrency());
   uint16_t queue_depth = 64;
@@ -102,6 +103,7 @@ void print_usage(const char* program) {
       << "  --concurrency <n>        Compatibility option; URMA throughput uses one worker per connection\n"
       << "  --connections <n>        URMA RPC connections and throughput workers. Default 64\n"
       << "  --duration <seconds>     Throughput duration. Default 10\n"
+      << "  --raw-report-interval <seconds> Raw server report interval. Default 0 disables periodic reports\n"
       << "  --client-threads <n>     Client executor threads. Default hardware\n\n"
       << "Server options:\n"
       << "  --server-threads <n>     Server threads. Default hardware\n\n"
@@ -207,6 +209,10 @@ options_t parse_options(int argc, char** argv) {
     }
     else if (key == "--duration") {
       opt.duration_seconds =
+          static_cast<uint32_t>(parse_u64(require_value(), key));
+    }
+    else if (key == "--raw-report-interval") {
+      opt.raw_report_interval_seconds =
           static_cast<uint32_t>(parse_u64(require_value(), key));
     }
     else if (key == "--server-threads") {
@@ -535,14 +541,15 @@ Lazy<void> raw_server_session(asio::ip::tcp::socket tcp_socket,
     auto [read_ec, read_size] =
         co_await coro_io::async_read(socket, asio::buffer(buffer));
     if (read_ec) {
-      ELOG_INFO << "raw URMA session closed: " << read_ec.message()
-                << ", messages=" << messages << ", bytes=" << bytes;
+      ELOG_DEBUG << "raw URMA session closed: " << read_ec.message()
+                 << ", messages=" << messages << ", bytes=" << bytes;
       co_return;
     }
     ++messages;
     bytes += read_size;
+    if (opt.raw_report_interval_seconds == 0) continue;
     auto now = std::chrono::steady_clock::now();
-    if (now - last >= 5s) {
+    if (now - last >= std::chrono::seconds(opt.raw_report_interval_seconds)) {
       auto seconds =
           std::chrono::duration_cast<std::chrono::duration<double>>(now - last)
               .count();

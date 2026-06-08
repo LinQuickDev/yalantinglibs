@@ -139,6 +139,8 @@ Client-only options:
 --connections <n>
 --concurrency <n> Compatibility option; URMA throughput uses one worker per connection.
 --duration <seconds>
+--raw-report-interval <seconds> Raw server report interval. Default 0 disables
+                                periodic server-side reports.
 --client-threads <n>
 ```
 
@@ -176,7 +178,8 @@ Server-only option:
   dispatch, and URMA receive/polling.
 - Use `--transport raw` to bypass coro_rpc and struct_pack. Raw mode sends the
   payload from client to server without a response, so it measures URMA ingress
-  throughput more directly:
+  throughput more directly. The raw server does not print periodic throughput by
+  default so stdout does not affect the measurement:
 
 ```bash
 ./coro_rpc_urma_benchmark server --transport raw --host 0.0.0.0 --port 9001
