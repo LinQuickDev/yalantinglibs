@@ -98,6 +98,45 @@ async_urma_read(urma_socket_t& socket, Buffer&& raw_buffer, bool read_some) {
   co_return std::pair{std::error_code{}, completed};
 }
 
+inline async_simple::coro::Lazy<
+    std::pair<std::error_code, std::vector<owned_data_view>>>
+async_urma_read_views(urma_socket_t& socket, std::size_t size) {
+  if (!socket.get_executor().running_in_this_thread())
+    co_await dispatch(socket.get_executor());
+
+  std::vector<owned_data_view> views;
+  std::size_t completed = 0;
+  if (socket.remain_read_buffer_size()) {
+    auto view = socket.detach_remain_data_view();
+    if (!view.empty()) {
+      completed += view.size();
+      views.push_back(std::move(view));
+    }
+  }
+  while (completed < size) {
+    auto [ec, length] =
+        co_await async_io<std::pair<std::error_code, std::size_t>>(
+            [&](auto&& callback) {
+              socket.post_recv(std::move(callback));
+            },
+            socket);
+    if (ec) co_return std::pair{ec, std::move(views)};
+    if (completed + length > size) {
+      ELOG_ERROR << "URMA read view received more data than requested: "
+                 << "requested=" << size << ", completed=" << completed
+                 << ", incoming=" << length;
+      co_return std::pair{std::make_error_code(std::errc::protocol_error),
+                          std::move(views)};
+    }
+    auto view = socket.detach_recv_buffer_view(length);
+    if (!view.empty()) {
+      completed += view.size();
+      views.push_back(std::move(view));
+    }
+  }
+  co_return std::pair{std::error_code{}, std::move(views)};
+}
+
 }  // namespace detail
 
 template <typename Buffer>

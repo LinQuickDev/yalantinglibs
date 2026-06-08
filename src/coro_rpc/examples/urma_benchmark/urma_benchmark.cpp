@@ -50,6 +50,17 @@ using namespace std::chrono_literals;
 
 std::string_view bench_echo(std::string_view data) { return data; }
 uint64_t bench_sink(std::string_view data) { return data.size(); }
+void bench_attachment_sink(coro_rpc::context<uint64_t> ctx) {
+  uint64_t size = 0;
+  auto views = ctx.get_context_info()->get_request_attachment_views();
+  if (!views.empty()) {
+    for (auto& view : views) size += view.size();
+  }
+  else {
+    size = ctx.get_context_info()->get_request_attachment2().size();
+  }
+  ctx.response_msg(size);
+}
 
 struct options_t {
   std::string role = "client";
@@ -97,7 +108,7 @@ void print_usage(const char* program) {
       << "  --log <trace|debug|info|warn|error> Default info\n\n"
       << "Client options:\n"
       << "  --mode <latency|throughput|both> Default both\n"
-      << "  --rpc <echo|sink>        echo returns payload; sink returns payload size. Default echo\n"
+      << "  --rpc <echo|sink|attach_sink> echo returns payload; sink returns payload size; attach_sink uses request attachment. Default echo\n"
       << "  --latency-iters <n>      Low-load serial requests. Default 10000\n"
       << "  --warmup-iters <n>       Warmup requests per client. Default 1000\n"
       << "  --concurrency <n>        Compatibility option; URMA throughput uses one worker per connection\n"
@@ -238,8 +249,8 @@ options_t parse_options(int argc, char** argv) {
   if (opt.transport != "rpc" && opt.transport != "raw") {
     throw std::invalid_argument("--transport must be rpc or raw");
   }
-  if (opt.rpc != "echo" && opt.rpc != "sink") {
-    throw std::invalid_argument("--rpc must be echo or sink");
+  if (opt.rpc != "echo" && opt.rpc != "sink" && opt.rpc != "attach_sink") {
+    throw std::invalid_argument("--rpc must be echo, sink, or attach_sink");
   }
   opt.connections = std::max<uint32_t>(opt.connections, 1);
   opt.concurrency = std::max<uint32_t>(opt.concurrency, opt.connections);
@@ -358,7 +369,16 @@ Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
   std::cout << "[urma_benchmark] client " << client_index
             << " warmup start, iterations=" << count << std::endl;
   for (uint32_t i = 0; i < count; ++i) {
-    if (rpc == "sink") {
+    if (rpc == "attach_sink") {
+      client.set_req_attachment(payload);
+      auto result =
+          co_await client.call_for<bench_attachment_sink>(30s);
+      if (!result || result.value() != payload.size()) {
+        ELOG_ERROR << "warmup failed at iteration " << i;
+        co_return false;
+      }
+    }
+    else if (rpc == "sink") {
       auto result = co_await client.call_for<bench_sink>(30s, payload);
       if (!result || result.value() != payload.size()) {
         ELOG_ERROR << "warmup failed at iteration " << i;
@@ -412,7 +432,13 @@ Lazy<void> run_latency(const options_t& opt, const std::string& payload) {
   for (uint32_t i = 0; i < opt.latency_iters; ++i) {
     auto begin = std::chrono::steady_clock::now();
     bool ok = false;
-    if (opt.rpc == "sink") {
+    if (opt.rpc == "attach_sink") {
+      client.set_req_attachment(payload);
+      auto result =
+          co_await client.call_for<bench_attachment_sink>(30s);
+      ok = result && result.value() == payload.size();
+    }
+    else if (opt.rpc == "sink") {
       auto result = co_await client.call_for<bench_sink>(30s, payload);
       ok = result && result.value() == payload.size();
     }
@@ -447,7 +473,13 @@ Lazy<worker_result_t> throughput_worker(coro_rpc_client& client,
   worker_result_t stat;
   while (std::chrono::steady_clock::now() < deadline) {
     bool ok = false;
-    if (rpc == "sink") {
+    if (rpc == "attach_sink") {
+      client.set_req_attachment(payload);
+      auto result =
+          co_await client.call_for<bench_attachment_sink>(30s);
+      ok = result && result.value() == payload.size();
+    }
+    else if (rpc == "sink") {
       auto result = co_await client.call_for<bench_sink>(30s, payload);
       ok = result && result.value() == payload.size();
     }
@@ -664,6 +696,7 @@ int run_server(const options_t& opt) {
   server.init_urma(make_urma_config(opt));
   server.register_handler<bench_echo>();
   server.register_handler<bench_sink>();
+  server.register_handler<bench_attachment_sink>();
   std::cout << "URMA RPC benchmark server listening on " << opt.host << ":"
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index

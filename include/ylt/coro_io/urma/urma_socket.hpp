@@ -38,6 +38,7 @@
 #include "async_simple/coro/Lazy.h"
 #include "async_simple/util/move_only_function.h"
 #include "ylt/coro_io/coro_io.hpp"
+#include "ylt/coro_io/data_view.hpp"
 #include "ylt/coro_io/detail/circle_buffer.hpp"
 #include "ylt/coro_io/urma/urma_buffer.hpp"
 #include "ylt/coro_io/urma/urma_device.hpp"
@@ -47,6 +48,18 @@
 
 namespace coro_io {
 namespace detail {
+
+struct urma_recv_buffer_owner {
+  urma_recv_buffer_owner(std::shared_ptr<urma_buffer_pool_t> pool,
+                         urma_buffer_t buffer)
+      : pool(std::move(pool)), buffer(std::move(buffer)) {}
+  ~urma_recv_buffer_owner() {
+    if (pool && buffer) pool->return_buffer(buffer);
+  }
+
+  std::shared_ptr<urma_buffer_pool_t> pool;
+  urma_buffer_t buffer;
+};
 
 inline std::error_code make_urma_error(int status) {
   if (status == URMA_SUCCESS) return {};
@@ -626,6 +639,24 @@ class urma_socket_t {
   }
 
   std::size_t remain_read_buffer_size() const { return remain_data_.size(); }
+
+  owned_data_view detach_remain_data_view() {
+    if (remain_data_.empty() || !state_->recv_buffer_) return {};
+    auto owner = std::make_shared<detail::urma_recv_buffer_owner>(
+        buffer_pool(), std::move(state_->recv_buffer_));
+    owned_data_view view{data_view{remain_data_, -1}, std::move(owner)};
+    remain_data_ = {};
+    return view;
+  }
+
+  owned_data_view detach_recv_buffer_view(std::size_t length) {
+    if (!state_->recv_buffer_ || length == 0) return {};
+    auto size = std::min<std::size_t>(length, state_->recv_buffer_.length);
+    auto data = data_view{state_->recv_buffer_.addr, size, -1};
+    auto owner = std::make_shared<detail::urma_recv_buffer_owner>(
+        buffer_pool(), std::move(state_->recv_buffer_));
+    return owned_data_view{data, std::move(owner)};
+  }
 
   void set_read_buffer_len(std::size_t consumed, std::size_t remaining) {
     remain_data_ = std::string_view(

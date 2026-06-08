@@ -132,8 +132,10 @@ Client-only options:
 
 ```text
 --mode <latency|throughput|both>
---rpc <echo|sink> Echo returns the payload. Sink returns only payload size and
-                  is useful for isolating request-ingress throughput.
+--rpc <echo|sink|attach_sink> Echo returns the payload. Sink returns only
+                             payload size. Attach_sink sends payload as a
+                             request attachment and uses the URMA segmented
+                             attachment fast path on the server.
 --latency-iters <n>
 --warmup-iters <n>
 --connections <n>
@@ -176,6 +178,10 @@ Server-only option:
   sink throughput is much higher than echo, the bottleneck is response
   serialization/sending. If sink is also low, focus on request read, RPC
   dispatch, and URMA receive/polling.
+- Use `--rpc attach_sink` to test the URMA RPC fast path. The request payload is
+  sent as attachment data, and the server handler reads segmented
+  `owned_data_view`s instead of copying the attachment into a contiguous
+  `std::string`.
 - Use `--transport raw` to bypass coro_rpc and struct_pack. Raw mode sends the
   payload from client to server without a response, so it measures URMA ingress
   throughput more directly. The raw server does not print periodic throughput by
