@@ -116,6 +116,8 @@ Throughput only:
 --host <ip>              Server listen/connect host. Server default 0.0.0.0,
                          client default 127.0.0.1
 --port <port>            Server port. Default 9001
+--transport <rpc|raw>    rpc uses coro_rpc. raw uses urma_socket directly.
+                         Default rpc
 --device <name>          URMA device. Default bonding_dev_0
 --eid-index <n>          URMA EID index. Default 0
 --payload <bytes>        Echo payload size. Default 64
@@ -172,3 +174,12 @@ Server-only option:
   sink throughput is much higher than echo, the bottleneck is response
   serialization/sending. If sink is also low, focus on request read, RPC
   dispatch, and URMA receive/polling.
+- Use `--transport raw` to bypass coro_rpc and struct_pack. Raw mode sends the
+  payload from client to server without a response, so it measures URMA ingress
+  throughput more directly:
+
+```bash
+./coro_rpc_urma_benchmark server --transport raw --host 0.0.0.0 --port 9001
+./coro_rpc_urma_benchmark client --transport raw --host <server-ip> \
+  --payload 1048576 --connections 64 --queue-depth 128 --duration 30
+```
