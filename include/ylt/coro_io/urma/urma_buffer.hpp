@@ -16,18 +16,21 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <queue>
 #include <mutex>
 #include <system_error>
 #include <sys/mman.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -91,8 +94,16 @@ class urma_buffer_pool_t {
   std::vector<urma_target_seg_t> slice_segs_;
 #endif
   std::vector<uint8_t> in_use_;
-  std::queue<size_t> free_indices_;
-  mutable std::mutex mutex_;
+  static constexpr size_t shard_count_ = 64;
+  size_t shard_for_index(size_t index) const noexcept {
+    return index % shard_count_;
+  }
+  size_t preferred_shard() const noexcept {
+    auto value = std::hash<std::thread::id>{}(std::this_thread::get_id());
+    return value % shard_count_;
+  }
+  std::array<std::queue<size_t>, shard_count_> free_indices_;
+  mutable std::array<std::mutex, shard_count_> mutexes_;
   std::atomic<size_t> outstanding_buffers_{0};
 };
 
@@ -182,7 +193,7 @@ inline bool urma_buffer_pool_t::init_buffers() {
 #endif
     buffers_.push_back(
         urma_buffer_t(addr, config_.buffer_size, buffer_seg));
-    free_indices_.push(i);
+    free_indices_[shard_for_index(i)].push(i);
   }
 
   ELOG_INFO << "URMA buffer pool: " << buffers_.size()
@@ -199,7 +210,10 @@ inline bool urma_buffer_pool_t::init_buffers() {
 
 inline urma_buffer_pool_t::~urma_buffer_pool_t() {
 #ifdef YLT_ENABLE_URMA
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::array<std::unique_lock<std::mutex>, shard_count_> locks;
+  for (size_t i = 0; i < shard_count_; ++i) {
+    locks[i] = std::unique_lock<std::mutex>(mutexes_[i]);
+  }
   if (seg_) {
     urma_unregister_seg(static_cast<urma_target_seg_t*>(seg_));
     seg_ = nullptr;
@@ -219,21 +233,23 @@ inline urma_buffer_pool_t::~urma_buffer_pool_t() {
 
 inline urma_buffer_t urma_buffer_pool_t::get_buffer(int gpu_id) {
 #ifdef YLT_ENABLE_URMA
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (free_indices_.empty()) {
-    ELOG_WARN << "URMA buffer pool out of buffers: total="
-              << buffers_.size()
-              << ", outstanding="
-              << outstanding_buffers_.load(std::memory_order_relaxed)
-              << ", buffer_size=" << config_.buffer_size
-              << ", total_memory=" << allocation_size_;
-    return urma_buffer_t{};
+  auto start = preferred_shard();
+  for (size_t i = 0; i < shard_count_; ++i) {
+    auto shard = (start + i) % shard_count_;
+    std::lock_guard<std::mutex> lock(mutexes_[shard]);
+    if (free_indices_[shard].empty()) continue;
+    size_t idx = free_indices_[shard].front();
+    free_indices_[shard].pop();
+    if (idx < in_use_.size()) in_use_[idx] = 1;
+    outstanding_buffers_++;
+    return buffers_[idx];
   }
-  size_t idx = free_indices_.front();
-  free_indices_.pop();
-  if (idx < in_use_.size()) in_use_[idx] = 1;
-  outstanding_buffers_++;
-  return buffers_[idx];
+  ELOG_WARN << "URMA buffer pool out of buffers: total=" << buffers_.size()
+            << ", outstanding="
+            << outstanding_buffers_.load(std::memory_order_relaxed)
+            << ", buffer_size=" << config_.buffer_size
+            << ", total_memory=" << allocation_size_;
+  return urma_buffer_t{};
 #else
   return urma_buffer_t{};
 #endif
@@ -242,7 +258,6 @@ inline urma_buffer_t urma_buffer_pool_t::get_buffer(int gpu_id) {
 inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
 #ifdef YLT_ENABLE_URMA
   if (!buffer) return;
-  std::lock_guard<std::mutex> lock(mutex_);
   auto* base = static_cast<char*>(base_addr_);
   auto* addr = static_cast<char*>(buffer.addr);
   if (base && addr >= base && addr < base + allocation_size_) {
@@ -250,6 +265,8 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
     if (offset % config_.buffer_size == 0) {
       auto index = offset / config_.buffer_size;
       if (index < buffers_.size()) {
+        auto shard = shard_for_index(index);
+        std::lock_guard<std::mutex> lock(mutexes_[shard]);
         if (index < in_use_.size() && !in_use_[index]) {
           ELOG_WARN << "return duplicated URMA buffer: " << buffer.addr
                     << ", index=" << index;
@@ -257,7 +274,7 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
           return;
         }
         if (index < in_use_.size()) in_use_[index] = 0;
-        free_indices_.push(index);
+        free_indices_[shard].push(index);
         if (outstanding_buffers_.load(std::memory_order_relaxed) > 0)
           outstanding_buffers_--;
         buffer = urma_buffer_t{};
@@ -271,8 +288,12 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
 
 inline size_t urma_buffer_pool_t::free_buffer_count() const {
 #ifdef YLT_ENABLE_URMA
-  std::lock_guard<std::mutex> lock(mutex_);
-  return free_indices_.size();
+  size_t total = 0;
+  for (size_t i = 0; i < shard_count_; ++i) {
+    std::lock_guard<std::mutex> lock(mutexes_[i]);
+    total += free_indices_[i].size();
+  }
+  return total;
 #else
   return 0;
 #endif
