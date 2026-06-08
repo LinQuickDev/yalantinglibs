@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>基于 URMA 构建的 coro_rpc 接口使用说明</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #5b6777;
+      --line: #dfe4ea;
+      --accent: #0875be;
+      --accent-soft: #e8f3fb;
+      --code-bg: #111827;
+      --code-text: #e5edf7;
+      --warn-bg: #fff7df;
+      --warn-line: #e2b448;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+        "PingFang SC", sans-serif;
+      line-height: 1.65;
+    }
+
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .hero {
+      padding: 56px 24px 36px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(30px, 4vw, 46px);
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    main.wrap {
+      padding-top: 28px;
+      padding-bottom: 60px;
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 36px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--accent);
+      font-size: 14px;
+      text-decoration: none;
+    }
+
+    section {
+      margin: 0 0 24px;
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.3;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      line-height: 1.35;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 14px 22px;
+      padding: 0;
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    code {
+      border-radius: 4px;
+      background: var(--accent-soft);
+      color: #075985;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      padding: 1px 5px;
+    }
+
+    pre {
+      margin: 14px 0 20px;
+      overflow-x: auto;
+      border-radius: 8px;
+      background: var(--code-bg);
+      color: var(--code-text);
+      font-size: 14px;
+      line-height: 1.55;
+      padding: 18px;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      margin: 14px 0 18px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f0f4f8;
+      font-weight: 650;
+    }
+
+    .note {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      color: #17364f;
+    }
+
+    .warn {
+      border-left-color: var(--warn-line);
+      background: var(--warn-bg);
+      color: #573c00;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+
+    .tile {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: #fbfcfd;
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 720px) {
+      .wrap {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .hero {
+        padding-top: 40px;
+      }
+
+      section {
+        padding: 20px 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap hero">
+      <h1>基于 URMA 构建的 coro_rpc 接口使用说明</h1>
+      <p class="lead">
+        本文说明 yalantinglibs 中如何启用 URMA 作为 coro_rpc 的传输层，
+        包括构建方式、最小服务端和客户端、常用配置、附件数据传输、性能测试与排障建议。
+      </p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <nav aria-label="目录">
+      <a href="#overview">使用流程</a>
+      <a href="#build">构建</a>
+      <a href="#server">服务端</a>
+      <a href="#client">客户端</a>
+      <a href="#config">配置项</a>
+      <a href="#attachment">附件传输</a>
+      <a href="#benchmark">验证与压测</a>
+      <a href="#troubleshooting">排障</a>
+    </nav>
+
+    <section id="overview">
+      <h2>一、整体使用流程</h2>
+      <div class="grid">
+        <div class="tile">
+          <strong>1. 编译启用 URMA</strong>
+          使用 CMake 打开 <code>YLT_ENABLE_URMA</code>，并确保系统已安装可用的 URMA 运行环境和设备驱动。
+        </div>
+        <div class="tile">
+          <strong>2. 服务端初始化 URMA</strong>
+          创建 <code>coro_rpc_server</code> 后调用 <code>server.init_urma()</code>，再注册 RPC handler 并启动服务。
+        </div>
+        <div class="tile">
+          <strong>3. 客户端初始化 URMA</strong>
+          创建 <code>coro_rpc_client</code> 后调用 <code>client.init_urma()</code>，再连接服务端地址并发起 RPC。
+        </div>
+        <div class="tile">
+          <strong>4. 按需设置参数</strong>
+          通过 <code>coro_io::urma_socket_t::config_t</code> 设置设备名、EID、队列深度、buffer 大小和内存上限。
+        </div>
+      </div>
+      <p class="note">
+        URMA 模式仍然复用 coro_rpc 的 handler 注册、<code>call</code>、<code>call_for</code>、<code>send_request</code>
+        等上层接口；区别主要是服务端和客户端需要先初始化 URMA 传输。
+      </p>
+    </section>
+
+    <section id="build">
+      <h2>二、构建方式</h2>
+      <p>在仓库根目录执行以下命令，启用 URMA 并构建示例：</p>
+      <pre><code class="language-bash">cmake -S . -B build -DYLT_ENABLE_URMA=ON -DBUILD_EXAMPLES=ON
+cmake --build build --target coro_rpc_urma_example -j</code></pre>
+      <p>如果需要构建压测工具：</p>
+      <pre><code class="language-bash">cmake --build build --target coro_rpc_urma_benchmark -j</code></pre>
+      <p class="warn note">
+        如果目标提示需要 <code>-DYLT_ENABLE_URMA=ON</code>，说明已有 build 目录没有打开该选项，需要重新执行 CMake configure。
+      </p>
+    </section>
+
+    <section id="server">
+      <h2>三、服务端写法</h2>
+      <p>最小服务端只需要定义 RPC 函数、初始化 URMA、注册 handler、启动服务。</p>
+      <pre><code class="language-cpp">#include "ylt/coro_rpc/coro_rpc_server.hpp"
+
+using namespace coro_rpc;
+
+std::string_view echo(std::string_view data) {
+  return data;
+}
+
+int main() {
+  coro_rpc_server server{/*thread_num*/ std::thread::hardware_concurrency(),
+                         /*port*/ 9000};
+
+  server.init_urma();
+  server.register_handler&lt;echo&gt;();
+
+  auto ec = server.start();
+  if (ec) {
+    std::cerr &lt;&lt; "start server failed: " &lt;&lt; ec.message() &lt;&lt; std::endl;
+    return 1;
+  }
+
+  return 0;
+}</code></pre>
+      <p>
+        <code>server.init_urma()</code> 会让服务端在握手阶段把连接升级为 URMA 传输。若不调用该函数，
+        coro_rpc 默认使用 TCP。
+      </p>
+    </section>
+
+    <section id="client">
+      <h2>四、客户端写法</h2>
+      <p>客户端需要在 <code>connect</code> 前调用 <code>init_urma</code>。连接地址仍使用 <code>host:port</code> 格式。</p>
+      <pre><code class="language-cpp">#include "async_simple/coro/SyncAwait.h"
+#include "ylt/coro_rpc/coro_rpc_client.hpp"
+
+using namespace async_simple::coro;
+using namespace coro_rpc;
+using namespace std::chrono_literals;
+
+std::string_view echo(std::string_view data);
+
+Lazy&lt;void&gt; request() {
+  coro_rpc_client client;
+
+  if (!client.init_urma()) {
+    std::cerr &lt;&lt; "init URMA client failed" &lt;&lt; std::endl;
+    co_return;
+  }
+
+  auto ec = co_await client.connect("127.0.0.1:9000");
+  if (ec) {
+    std::cerr &lt;&lt; "connect failed: " &lt;&lt; ec.message() &lt;&lt; std::endl;
+    co_return;
+  }
+
+  auto result = co_await client.call_for&lt;echo&gt;(30s, "hello urma");
+  if (!result) {
+    std::cerr &lt;&lt; "rpc failed: " &lt;&lt; result.error().msg &lt;&lt; std::endl;
+    co_return;
+  }
+
+  std::cout &lt;&lt; result.value() &lt;&lt; std::endl;
+}
+
+int main() {
+  syncAwait(request());
+}</code></pre>
+      <p>
+        对于需要流水线或连接复用的场景，可以继续使用 <code>coro_io::client_pool&lt;coro_rpc_client&gt;</code>。
+        每个连接内部仍由 <code>coro_rpc_client</code> 完成 URMA 初始化与请求发送。
+      </p>
+    </section>
+
+    <section id="config">
+      <h2>五、常用 URMA 配置</h2>
+      <p>服务端和客户端都可以传入同一个 <code>coro_io::urma_socket_t::config_t</code>：</p>
+      <pre><code class="language-cpp">#include "ylt/coro_io/urma/urma_socket.hpp"
+
+coro_io::urma_socket_t::config_t urma_config{
+    .cq_size = 128,
+    .recv_buffer_cnt = 64,
+    .send_buffer_cnt = 64,
+    .buffer_size = 4 * 1024,
+    .max_memory_usage = 256ull * 1024 * 1024,
+    .device_name = "bonding_dev_0",
+    .eid_index = 0,
+    .tp_type = URMA_CTP,
+};
+
+server.init_urma(urma_config);
+client.init_urma(urma_config);</code></pre>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>默认值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>cq_size</code></td>
+            <td>128</td>
+            <td>完成队列大小。</td>
+          </tr>
+          <tr>
+            <td><code>recv_buffer_cnt</code></td>
+            <td>8</td>
+            <td>接收队列 buffer 数量。并发或大包场景可适当增大。</td>
+          </tr>
+          <tr>
+            <td><code>send_buffer_cnt</code></td>
+            <td>4</td>
+            <td>发送队列 buffer 数量。吞吐压测时通常需要增大。</td>
+          </tr>
+          <tr>
+            <td><code>buffer_size</code></td>
+            <td>4096</td>
+            <td>URMA 分片发送大小。CTP 场景默认使用 4KB。</td>
+          </tr>
+          <tr>
+            <td><code>max_memory_usage</code></td>
+            <td>256 MiB</td>
+            <td>URMA buffer pool 的进程级内存上限。</td>
+          </tr>
+          <tr>
+            <td><code>device_name</code></td>
+            <td>空字符串</td>
+            <td>为空时自动选择第一个 URMA 设备；生产环境建议显式设置。</td>
+          </tr>
+          <tr>
+            <td><code>eid_index</code></td>
+            <td>0</td>
+            <td>选择设备上的 EID 下标。</td>
+          </tr>
+          <tr>
+            <td><code>tp_type</code></td>
+            <td><code>URMA_CTP</code></td>
+            <td>传输类型，当前示例默认使用 CTP。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">
+        配置必须在 <code>connect</code> 或 <code>start</code> 之前完成。服务端和客户端的设备名、EID、传输类型需要和实际网络环境匹配。
+      </p>
+    </section>
+
+    <section id="attachment">
+      <h2>六、附件数据传输</h2>
+      <p>
+        对大块 payload，除了把数据作为普通 RPC 参数传入，也可以用 attachment 发送。
+        URMA benchmark 中的 <code>attach_sink</code> 模式就是用 attachment 测试快路径。
+      </p>
+      <h3>客户端设置请求 attachment</h3>
+      <pre><code class="language-cpp">std::string payload(1024 * 1024, 'x');
+
+client.set_req_attachment(payload);
+auto result = co_await client.call_for&lt;upload&gt;(30s, payload.size());</code></pre>
+      <h3>客户端预设响应 attachment buffer</h3>
+      <pre><code class="language-cpp">std::vector&lt;char&gt; recv_buffer(1024 * 1024);
+
+client.set_resp_attachment_buf(recv_buffer);
+auto result = co_await client.call_for&lt;download&gt;(30s);
+
+std::string_view attachment = client.get_resp_attachment();</code></pre>
+      <h3>服务端读取请求 attachment 并设置响应 attachment</h3>
+      <pre><code class="language-cpp">#include "ylt/coro_rpc/coro_rpc_server.hpp"
+
+void upload(std::size_t expected_size) {
+  auto* ctx = coro_rpc::get_context();
+  auto attachment = ctx-&gt;get_request_attachment();
+
+  if (attachment.size() != expected_size) {
+    throw std::runtime_error("bad attachment size");
+  }
+}
+
+void echo_attachment() {
+  auto* ctx = coro_rpc::get_context();
+  auto attachment = ctx-&gt;get_request_attachment();
+  ctx-&gt;set_response_attachment(attachment);
+}</code></pre>
+      <p>
+        如果启用了 GPU 相关能力，可以使用 <code>set_req_attachment2</code>、<code>set_resp_attachment_buf2</code>
+        和 <code>get_resp_attachment2</code>，通过 <code>coro_io::data_view</code> 携带 <code>gpu_id</code>。
+        <code>gpu_id == -1</code> 表示普通 CPU 内存。
+      </p>
+    </section>
+
+    <section id="benchmark">
+      <h2>七、验证与压测</h2>
+      <p>仓库提供了 <code>coro_rpc_urma_benchmark</code>，可用于同机或跨节点验证。</p>
+      <h3>服务端节点</h3>
+      <pre><code class="language-bash">./build/output/examples/coro_rpc/coro_rpc_urma_benchmark server \
+  --host 0.0.0.0 \
+  --port 9001 \
+  --device bonding_dev_0</code></pre>
+      <h3>客户端节点</h3>
+      <pre><code class="language-bash">./build/output/examples/coro_rpc/coro_rpc_urma_benchmark client \
+  --host &lt;server-ip&gt; \
+  --port 9001 \
+  --device bonding_dev_0 \
+  --mode both \
+  --payload 64 \
+  --latency-iters 10000 \
+  --connections 128 \
+  --duration 30</code></pre>
+      <p>测试大包 attachment 快路径：</p>
+      <pre><code class="language-bash">./build/output/examples/coro_rpc/coro_rpc_urma_benchmark client \
+  --host &lt;server-ip&gt; \
+  --port 9001 \
+  --mode throughput \
+  --rpc attach_sink \
+  --payload 1048576 \
+  --connections 64 \
+  --pipeline-depth 8 \
+  --queue-depth 128 \
+  --duration 30</code></pre>
+    </section>
+
+    <section id="troubleshooting">
+      <h2>八、常见问题排查</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>现象</th>
+            <th>检查点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>编译时没有 URMA 示例目标</td>
+            <td>确认 CMake configure 已带 <code>-DYLT_ENABLE_URMA=ON</code>，并且安装了 URMA 头文件和库。</td>
+          </tr>
+          <tr>
+            <td><code>init_urma</code> 返回失败</td>
+            <td>检查设备名、EID、驱动状态、URMA 运行时是否可用；先用默认配置或实际设备名重试。</td>
+          </tr>
+          <tr>
+            <td>客户端连接失败</td>
+            <td>确认 TCP 握手地址可达，服务端已调用 <code>init_urma</code> 并启动，防火墙未阻断端口。</td>
+          </tr>
+          <tr>
+            <td>高并发出现发送或接收错误</td>
+            <td>降低连接数或 pipeline depth，或增大 <code>recv_buffer_cnt</code>、<code>send_buffer_cnt</code>、<code>max_memory_usage</code>。</td>
+          </tr>
+          <tr>
+            <td>吞吐不符合预期</td>
+            <td>先用 benchmark 的 <code>--transport raw</code> 排除 RPC 层开销，再对比 <code>echo</code>、<code>sink</code>、<code>attach_sink</code>。</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">
+        参考代码位于 <code>src/coro_rpc/examples/urma_example/urma_example.cpp</code>，
+        压测说明位于 <code>src/coro_rpc/examples/urma_benchmark/README.md</code>。
+      </p>
+    </section>
+
+    <footer>
+      <p>适用对象：yalantinglibs coro_rpc URMA 传输层。最后更新：2026-06-08。</p>
+    </footer>
+  </main>
+</body>
+</html>
