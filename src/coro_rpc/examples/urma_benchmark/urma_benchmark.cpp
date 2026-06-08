@@ -58,7 +58,7 @@ struct options_t {
   uint32_t latency_iters = 10000;
   uint32_t warmup_iters = 1000;
   uint32_t concurrency = 64;
-  uint32_t connections = 1;
+  uint32_t connections = 64;
   uint32_t duration_seconds = 10;
   uint32_t server_threads = std::max(1u, std::thread::hardware_concurrency());
   uint32_t client_threads = std::max(1u, std::thread::hardware_concurrency());
@@ -90,8 +90,8 @@ void print_usage(const char* program) {
       << "  --mode <latency|throughput|both> Default both\n"
       << "  --latency-iters <n>      Low-load serial requests. Default 10000\n"
       << "  --warmup-iters <n>       Warmup requests per client. Default 1000\n"
-      << "  --concurrency <n>        Throughput coroutines. Default 64\n"
-      << "  --connections <n>        URMA RPC connections. Default 1\n"
+      << "  --concurrency <n>        Compatibility option; URMA throughput uses one worker per connection\n"
+      << "  --connections <n>        URMA RPC connections and throughput workers. Default 64\n"
       << "  --duration <seconds>     Throughput duration. Default 10\n"
       << "  --client-threads <n>     Client executor threads. Default hardware\n\n"
       << "Server options:\n"
@@ -211,8 +211,8 @@ options_t parse_options(int argc, char** argv) {
       opt.mode != "both") {
     throw std::invalid_argument("--mode must be latency, throughput, or both");
   }
-  opt.concurrency = std::max<uint32_t>(opt.concurrency, 1);
   opt.connections = std::max<uint32_t>(opt.connections, 1);
+  opt.concurrency = std::max<uint32_t>(opt.concurrency, opt.connections);
   opt.queue_depth = std::max<uint16_t>(opt.queue_depth, 1);
   if (opt.role == "server" && !host_was_set) {
     opt.host = "0.0.0.0";
@@ -375,15 +375,17 @@ Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
   auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(opt.duration_seconds);
   std::vector<Lazy<worker_result_t>> workers;
-  workers.reserve(opt.concurrency);
-  for (uint32_t i = 0; i < opt.concurrency; ++i) {
-    workers.push_back(throughput_worker(*clients[i % clients.size()], payload,
-                                        deadline));
+  workers.reserve(clients.size());
+  for (auto& client : clients) {
+    workers.push_back(throughput_worker(*client, payload, deadline));
   }
 
   std::cout << "[urma_benchmark] throughput measurement start, duration_s="
-            << opt.duration_seconds << ", concurrency=" << opt.concurrency
-            << ", connections=" << opt.connections << std::endl;
+            << opt.duration_seconds << ", workers=" << workers.size()
+            << ", connections=" << opt.connections
+            << ", requested_concurrency=" << opt.concurrency
+            << ". URMA throughput uses one serial worker per connection."
+            << std::endl;
   auto begin = std::chrono::steady_clock::now();
   auto results = co_await collectAll(std::move(workers));
   auto end = std::chrono::steady_clock::now();
@@ -405,7 +407,7 @@ Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
             << "throughput duration_s=" << seconds
             << " requests=" << total.requests << " errors=" << total.errors
             << " rps=" << rps << " payload_mib_per_s=" << mbps
-            << " concurrency=" << opt.concurrency
+            << " workers=" << clients.size()
             << " connections=" << opt.connections << "\n";
   status("throughput test finished");
 }

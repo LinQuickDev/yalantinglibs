@@ -54,8 +54,7 @@ Run both latency and throughput tests:
   --mode both \
   --payload 64 \
   --latency-iters 10000 \
-  --connections 4 \
-  --concurrency 64 \
+  --connections 64 \
   --duration 10
 ```
 
@@ -80,8 +79,7 @@ On the client node:
   --mode both \
   --payload 64 \
   --latency-iters 10000 \
-  --connections 8 \
-  --concurrency 128 \
+  --connections 128 \
   --duration 30
 ```
 
@@ -108,8 +106,7 @@ Throughput only:
   --port 9001 \
   --mode throughput \
   --payload 4096 \
-  --connections 8 \
-  --concurrency 128 \
+  --connections 128 \
   --duration 30
 ```
 
@@ -134,7 +131,7 @@ Client-only options:
 --latency-iters <n>
 --warmup-iters <n>
 --connections <n>
---concurrency <n>
+--concurrency <n> Compatibility option; URMA throughput uses one worker per connection.
 --duration <seconds>
 --client-threads <n>
 ```
@@ -156,8 +153,11 @@ Server-only option:
 - The URMA buffer pool allocates one large contiguous memory block and registers
   it as one segment, then splits it into fixed-size buffers. This avoids doing
   one `urma_register_seg` call per 4KB buffer during startup.
-- `--connections` controls the number of RPC client connections created by the
-  throughput test.
-- `--concurrency` controls the number of concurrent request coroutines.
+- `--connections` controls the number of RPC client connections and throughput
+  workers. Each throughput worker owns one `coro_rpc_client` and sends serial
+  requests on that connection.
+- `--concurrency` is retained as a compatibility option. The URMA benchmark does
+  not run multiple throughput coroutines on the same connection because that can
+  overrun the current URMA send/recv credit model and produce `WR_FLUSH_ERR`.
 - Latency output is in microseconds and includes avg/min/p50/p90/p99/p999/max.
 - Throughput output includes request rate and payload MiB/s.
