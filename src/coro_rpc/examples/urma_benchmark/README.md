@@ -139,6 +139,8 @@ Client-only options:
 --latency-iters <n>
 --warmup-iters <n>
 --connections <n>
+--pipeline-depth <n> Outstanding RPC calls per connection in throughput mode.
+                     Default 1.
 --concurrency <n> Compatibility option; URMA throughput uses one worker per connection.
 --duration <seconds>
 --raw-report-interval <seconds> Raw server report interval. Default 0 disables
@@ -167,8 +169,10 @@ Server-only option:
   `--queue-depth`, and `--payload`. If the explicit memory value is too small,
   it is raised automatically for the benchmark process.
 - `--connections` controls the number of RPC client connections and throughput
-  workers. Each throughput worker owns one `coro_rpc_client` and sends serial
-  requests on that connection.
+  workers. Each throughput worker owns one `coro_rpc_client`.
+- `--pipeline-depth` keeps multiple outstanding RPC calls on each connection in
+  throughput mode. Use it with `--rpc attach_sink` to test whether one
+  request/response at a time is limiting throughput.
 - `--concurrency` is retained as a compatibility option. The URMA benchmark does
   not run multiple throughput coroutines on the same connection because that can
   overrun the current URMA send/recv credit model and produce `WR_FLUSH_ERR`.
@@ -191,4 +195,12 @@ Server-only option:
 ./coro_rpc_urma_benchmark server --transport raw --host 0.0.0.0 --port 9001
 ./coro_rpc_urma_benchmark client --transport raw --host <server-ip> \
   --payload 1048576 --connections 64 --queue-depth 128 --duration 30
+```
+
+Example RPC fast-path throughput test:
+
+```bash
+./coro_rpc_urma_benchmark client --host <server-ip> --mode throughput \
+  --rpc attach_sink --payload 1048576 --connections 64 --pipeline-depth 8 \
+  --queue-depth 128 --duration 30
 ```

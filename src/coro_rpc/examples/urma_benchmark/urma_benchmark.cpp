@@ -76,6 +76,7 @@ struct options_t {
   uint32_t warmup_iters = 1000;
   uint32_t concurrency = 64;
   uint32_t connections = 64;
+  uint32_t pipeline_depth = 1;
   uint32_t duration_seconds = 10;
   uint32_t raw_report_interval_seconds = 0;
   uint32_t server_threads = std::max(1u, std::thread::hardware_concurrency());
@@ -113,6 +114,7 @@ void print_usage(const char* program) {
       << "  --warmup-iters <n>       Warmup requests per client. Default 1000\n"
       << "  --concurrency <n>        Compatibility option; URMA throughput uses one worker per connection\n"
       << "  --connections <n>        URMA RPC connections and throughput workers. Default 64\n"
+      << "  --pipeline-depth <n>     Outstanding RPC calls per connection in throughput mode. Default 1\n"
       << "  --duration <seconds>     Throughput duration. Default 10\n"
       << "  --raw-report-interval <seconds> Raw server report interval. Default 0 disables periodic reports\n"
       << "  --client-threads <n>     Client executor threads. Default hardware\n\n"
@@ -218,6 +220,10 @@ options_t parse_options(int argc, char** argv) {
     else if (key == "--connections") {
       opt.connections = static_cast<uint32_t>(parse_u64(require_value(), key));
     }
+    else if (key == "--pipeline-depth") {
+      opt.pipeline_depth =
+          static_cast<uint32_t>(parse_u64(require_value(), key));
+    }
     else if (key == "--duration") {
       opt.duration_seconds =
           static_cast<uint32_t>(parse_u64(require_value(), key));
@@ -253,6 +259,7 @@ options_t parse_options(int argc, char** argv) {
     throw std::invalid_argument("--rpc must be echo, sink, or attach_sink");
   }
   opt.connections = std::max<uint32_t>(opt.connections, 1);
+  opt.pipeline_depth = std::max<uint32_t>(opt.pipeline_depth, 1);
   opt.concurrency = std::max<uint32_t>(opt.concurrency, opt.connections);
   opt.queue_depth = std::max<uint16_t>(opt.queue_depth, 1);
   if (opt.role == "server" && !host_was_set) {
@@ -362,6 +369,9 @@ Lazy<bool> connect_client(coro_rpc_client& client, const options_t& opt,
   co_return true;
 }
 
+Lazy<bool> issue_rpc_call(coro_rpc_client& client, const std::string& payload,
+                          std::string_view rpc);
+
 Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
                   uint32_t count, std::string_view rpc,
                   uint32_t client_index = 0) {
@@ -369,33 +379,29 @@ Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
   std::cout << "[urma_benchmark] client " << client_index
             << " warmup start, iterations=" << count << std::endl;
   for (uint32_t i = 0; i < count; ++i) {
-    if (rpc == "attach_sink") {
-      client.set_req_attachment(payload);
-      auto result =
-          co_await client.call_for<bench_attachment_sink>(30s);
-      if (!result || result.value() != payload.size()) {
-        ELOG_ERROR << "warmup failed at iteration " << i;
-        co_return false;
-      }
-    }
-    else if (rpc == "sink") {
-      auto result = co_await client.call_for<bench_sink>(30s, payload);
-      if (!result || result.value() != payload.size()) {
-        ELOG_ERROR << "warmup failed at iteration " << i;
-        co_return false;
-      }
-    }
-    else {
-      auto result = co_await client.call_for<bench_echo>(30s, payload);
-      if (!result || result.value().size() != payload.size()) {
-        ELOG_ERROR << "warmup failed at iteration " << i;
-        co_return false;
-      }
+    if (!(co_await issue_rpc_call(client, payload, rpc))) {
+      ELOG_ERROR << "warmup failed at iteration " << i;
+      co_return false;
     }
   }
   std::cout << "[urma_benchmark] client " << client_index << " warmup done"
             << std::endl;
   co_return true;
+}
+
+Lazy<bool> issue_rpc_call(coro_rpc_client& client, const std::string& payload,
+                          std::string_view rpc) {
+  if (rpc == "attach_sink") {
+    auto result = co_await client.call<bench_attachment_sink>(
+        request_config_t{30s, payload, {}, -1, -1});
+    co_return result && result.value() == payload.size();
+  }
+  if (rpc == "sink") {
+    auto result = co_await client.call_for<bench_sink>(30s, payload);
+    co_return result && result.value() == payload.size();
+  }
+  auto result = co_await client.call_for<bench_echo>(30s, payload);
+  co_return result && result.value().size() == payload.size();
 }
 
 void print_latency_result(std::vector<uint64_t>& samples) {
@@ -431,21 +437,7 @@ Lazy<void> run_latency(const options_t& opt, const std::string& payload) {
             << opt.latency_iters << std::endl;
   for (uint32_t i = 0; i < opt.latency_iters; ++i) {
     auto begin = std::chrono::steady_clock::now();
-    bool ok = false;
-    if (opt.rpc == "attach_sink") {
-      client.set_req_attachment(payload);
-      auto result =
-          co_await client.call_for<bench_attachment_sink>(30s);
-      ok = result && result.value() == payload.size();
-    }
-    else if (opt.rpc == "sink") {
-      auto result = co_await client.call_for<bench_sink>(30s, payload);
-      ok = result && result.value() == payload.size();
-    }
-    else {
-      auto result = co_await client.call_for<bench_echo>(30s, payload);
-      ok = result && result.value().size() == payload.size();
-    }
+    bool ok = co_await issue_rpc_call(client, payload, opt.rpc);
     auto end = std::chrono::steady_clock::now();
     if (!ok) {
       ELOG_ERROR << "latency call failed at iteration " << i;
@@ -468,31 +460,29 @@ struct worker_result_t {
 Lazy<worker_result_t> throughput_worker(coro_rpc_client& client,
                                          const std::string& payload,
                                          std::string_view rpc,
+                                         uint32_t pipeline_depth,
                                          std::chrono::steady_clock::time_point
                                              deadline) {
   worker_result_t stat;
   while (std::chrono::steady_clock::now() < deadline) {
-    bool ok = false;
-    if (rpc == "attach_sink") {
-      client.set_req_attachment(payload);
-      auto result =
-          co_await client.call_for<bench_attachment_sink>(30s);
-      ok = result && result.value() == payload.size();
+    std::vector<Lazy<bool>> calls;
+    calls.reserve(pipeline_depth);
+    for (uint32_t i = 0; i < pipeline_depth &&
+                         std::chrono::steady_clock::now() < deadline;
+         ++i) {
+      calls.push_back(issue_rpc_call(client, payload, rpc));
     }
-    else if (rpc == "sink") {
-      auto result = co_await client.call_for<bench_sink>(30s, payload);
-      ok = result && result.value() == payload.size();
+    if (calls.empty()) break;
+    auto results = co_await collectAll(std::move(calls));
+    for (auto& item : results) {
+      bool ok = item.value();
+      if (!ok) {
+        ++stat.errors;
+        continue;
+      }
+      ++stat.requests;
+      stat.bytes += payload.size();
     }
-    else {
-      auto result = co_await client.call_for<bench_echo>(30s, payload);
-      ok = result && result.value().size() == payload.size();
-    }
-    if (!ok) {
-      ++stat.errors;
-      continue;
-    }
-    ++stat.requests;
-    stat.bytes += payload.size();
   }
   co_return stat;
 }
@@ -514,12 +504,14 @@ Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
   std::vector<Lazy<worker_result_t>> workers;
   workers.reserve(clients.size());
   for (auto& client : clients) {
-    workers.push_back(throughput_worker(*client, payload, opt.rpc, deadline));
+    workers.push_back(throughput_worker(*client, payload, opt.rpc,
+                                        opt.pipeline_depth, deadline));
   }
 
   std::cout << "[urma_benchmark] throughput measurement start, duration_s="
             << opt.duration_seconds << ", workers=" << workers.size()
             << ", connections=" << opt.connections
+            << ", pipeline_depth=" << opt.pipeline_depth
             << ", requested_concurrency=" << opt.concurrency
             << ". URMA throughput uses one serial worker per connection."
             << std::endl;
@@ -719,6 +711,9 @@ int run_client(const options_t& opt) {
             << ", max_memory_mib="
             << effective_pool_memory_usage(opt) / 1024 / 1024
             << ", connections=" << opt.connections
+            << ", pipeline_depth=" << opt.pipeline_depth
+            << ", total_outstanding="
+            << static_cast<uint64_t>(opt.connections) * opt.pipeline_depth
             << ", concurrency=" << opt.concurrency << std::endl;
   coro_io::get_global_executor(opt.client_threads);
   std::string payload(opt.payload_size, 'x');
