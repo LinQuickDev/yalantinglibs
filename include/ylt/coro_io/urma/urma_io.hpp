@@ -24,6 +24,7 @@
 
 #include "async_simple/Promise.h"
 #include "ylt/coro_io/coro_io.hpp"
+#include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
 #include "ylt/coro_io/urma/urma_socket.hpp"
 
 namespace coro_io {
@@ -79,16 +80,27 @@ async_urma_read(urma_socket_t& socket, Buffer&& raw_buffer, bool read_some) {
       completed += count;
     }
     while (buffer.size()) {
+      auto wait_begin = urma_benchmark_profile::enabled()
+                            ? urma_benchmark_profile::now_ns()
+                            : 0;
       auto [ec, length] =
           co_await async_io<std::pair<std::error_code, std::size_t>>(
               [&](auto&& callback) {
                 socket.post_recv(std::move(callback));
               },
               socket);
+      urma_benchmark_profile::record_since(
+          urma_benchmark_profile::stage::urma_read_wait_completion,
+          wait_begin);
       if (ec) co_return std::pair{ec, completed};
       auto recv = socket.get_recv_buffer();
       auto count = std::min<std::size_t>(length, buffer.size());
+      auto copy_begin = urma_benchmark_profile::enabled()
+                            ? urma_benchmark_profile::now_ns()
+                            : 0;
       std::memcpy(buffer.data(), reinterpret_cast<void*>(recv.addr), count);
+      urma_benchmark_profile::record_since(
+          urma_benchmark_profile::stage::urma_read_copy, copy_begin);
       buffer += count;
       completed += count;
       socket.set_read_buffer_len(count, length - count);
@@ -114,12 +126,17 @@ async_urma_read_views(urma_socket_t& socket, std::size_t size) {
     }
   }
   while (completed < size) {
+    auto wait_begin = urma_benchmark_profile::enabled()
+                          ? urma_benchmark_profile::now_ns()
+                          : 0;
     auto [ec, length] =
         co_await async_io<std::pair<std::error_code, std::size_t>>(
             [&](auto&& callback) {
               socket.post_recv(std::move(callback));
             },
             socket);
+    urma_benchmark_profile::record_since(
+        urma_benchmark_profile::stage::urma_read_wait_completion, wait_begin);
     if (ec) co_return std::pair{ec, std::move(views)};
     if (completed + length > size) {
       ELOG_ERROR << "URMA read view received more data than requested: "
@@ -128,11 +145,16 @@ async_urma_read_views(urma_socket_t& socket, std::size_t size) {
       co_return std::pair{std::make_error_code(std::errc::protocol_error),
                           std::move(views)};
     }
+    auto view_begin = urma_benchmark_profile::enabled()
+                          ? urma_benchmark_profile::now_ns()
+                          : 0;
     auto view = socket.detach_recv_buffer_view(length);
     if (!view.empty()) {
       completed += view.size();
       views.push_back(std::move(view));
     }
+    urma_benchmark_profile::record_since(
+        urma_benchmark_profile::stage::urma_read_view, view_begin);
   }
   co_return std::pair{std::error_code{}, std::move(views)};
 }
@@ -150,6 +172,9 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
   std::size_t total_size = 0;
   for (auto& item : buffers) total_size += item.size();
   std::size_t completed = 0;
+  auto total_begin = urma_benchmark_profile::enabled()
+                         ? urma_benchmark_profile::now_ns()
+                         : 0;
   ELOG_DEBUG << "URMA async_write start: total_size=" << total_size
              << ", chunk_size=" << socket.get_buffer_size()
              << ", send_window=" << socket.get_send_window_size();
@@ -161,6 +186,9 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
     if (!buffer)
       return {std::make_error_code(std::errc::no_buffer_space), false};
     std::size_t length = 0;
+    auto copy_begin = urma_benchmark_profile::enabled()
+                          ? urma_benchmark_profile::now_ns()
+                          : 0;
     while (!buffers.empty() && length < socket.get_buffer_size()) {
       auto count = std::min<std::size_t>(
           buffers.front().size(), socket.get_buffer_size() - length);
@@ -170,10 +198,17 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
       buffers.front() += count;
       if (buffers.front().size() == 0) buffers.erase(buffers.begin());
     }
+    urma_benchmark_profile::record_since(
+        urma_benchmark_profile::stage::urma_write_copy, copy_begin);
+    auto post_begin = urma_benchmark_profile::enabled()
+                          ? urma_benchmark_profile::now_ns()
+                          : 0;
     socket.post_send(std::move(buffer), length,
                      [state](std::pair<std::error_code, std::size_t> result) {
                        state->push(result);
                      });
+    urma_benchmark_profile::record_since(
+        urma_benchmark_profile::stage::urma_post_send, post_begin);
     ++in_flight;
     return {{}, true};
   };
@@ -189,13 +224,20 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
       if (!posted) break;
     }
     if (in_flight == 0) continue;
+    auto wait_begin = urma_benchmark_profile::enabled()
+                          ? urma_benchmark_profile::now_ns()
+                          : 0;
     auto result = co_await detail::wait_urma_write_completion(state);
+    urma_benchmark_profile::record_since(
+        urma_benchmark_profile::stage::urma_wait_send_completion, wait_begin);
     --in_flight;
     if (result.first) co_return std::pair{result.first, completed};
     completed += result.second;
   }
   ELOG_DEBUG << "URMA async_write done: total_size=" << total_size
              << ", completed=" << completed;
+  urma_benchmark_profile::record_since(
+      urma_benchmark_profile::stage::urma_write_total, total_begin);
   co_return std::pair{std::error_code{}, completed};
 }
 

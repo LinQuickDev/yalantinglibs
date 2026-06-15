@@ -125,6 +125,9 @@ Throughput only:
 --queue-depth <n>        URMA send/recv queue depth. Default 64
 --max-memory-mib <n>     URMA buffer pool memory per process. Default 256,
                          auto-raised when payload/connections need more
+--profile                Enable in-memory stage latency profiling. Default off.
+--profile-sample-rate <n> Record one sample every n events per stage/thread.
+                         Default 1.
 --log <trace|debug|info|warn|error> Default info
 ```
 
@@ -178,6 +181,11 @@ Server-only option:
   overrun the current URMA send/recv credit model and produce `WR_FLUSH_ERR`.
 - Latency output is in microseconds and includes avg/min/p50/p90/p99/p999/max.
 - Throughput output includes request rate and payload MiB/s.
+- With `--profile`, the client prints one final `urma_profile` block after the
+  selected benchmark modes finish. Each stage is sampled in thread-local memory
+  and reports avg/p99/p9999/max in microseconds. Use
+  `--profile-sample-rate` for long throughput runs to reduce memory and timing
+  overhead.
 - Use `--rpc sink` to remove the large echo response from the server side. If
   sink throughput is much higher than echo, the bottleneck is response
   serialization/sending. If sink is also low, focus on request read, RPC

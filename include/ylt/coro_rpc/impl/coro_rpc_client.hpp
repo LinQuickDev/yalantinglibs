@@ -68,6 +68,7 @@
 #include "ylt/coro_io/heterogeneous_buffer.hpp"
 #include "ylt/coro_io/io_context_pool.hpp"
 #include "ylt/coro_io/socket_wrapper.hpp"
+#include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
 #include "ylt/coro_rpc/impl/errno.h"
 #include "ylt/struct_pack.hpp"
 #include "ylt/struct_pack/reflection.hpp"
@@ -1467,7 +1468,13 @@ class coro_rpc_client {
       coro_rpc_protocol::resp_header header;
       char buffer[coro_rpc_protocol::RESP_HEAD_LEN];
       auto tp = std::chrono::steady_clock::now();
+      auto profile_begin = coro_io::urma_benchmark_profile::enabled()
+                               ? coro_io::urma_benchmark_profile::now_ns()
+                               : 0;
       ret = co_await coro_io::async_read(socket, asio::buffer(buffer));
+      coro_io::urma_benchmark_profile::record_since(
+          coro_io::urma_benchmark_profile::stage::client_recv_header,
+          profile_begin);
       [[maybe_unused]] auto ec = struct_pack::deserialize_to<
           struct_pack::sp_config::DISABLE_ALL_META_INFO>(
           header, std::string_view{buffer, buffer + sizeof(buffer)});
@@ -1505,9 +1512,15 @@ class coro_rpc_client {
         controller->resp_buffer_.read_buf_.resize(body_len);
       }
       if (header.attach_length == 0) {
+        profile_begin = coro_io::urma_benchmark_profile::enabled()
+                            ? coro_io::urma_benchmark_profile::now_ns()
+                            : 0;
         ret = co_await coro_io::async_read(
             socket,
             asio::buffer(controller->resp_buffer_.read_buf_.data(), body_len));
+        coro_io::urma_benchmark_profile::record_since(
+            coro_io::urma_benchmark_profile::stage::client_recv_payload,
+            profile_begin);
         controller->resp_buffer_.resp_attachment_buf_.clear();
       }
       else {
@@ -1552,7 +1565,13 @@ class coro_rpc_client {
                                   body_len},
                   0},
               attachment_buffer};
+          profile_begin = coro_io::urma_benchmark_profile::enabled()
+                              ? coro_io::urma_benchmark_profile::now_ns()
+                              : 0;
           ret = co_await coro_io::async_read(socket, iov);
+          coro_io::urma_benchmark_profile::record_since(
+              coro_io::urma_benchmark_profile::stage::client_recv_payload,
+              profile_begin);
         }
         else {
           std::array<asio::mutable_buffer, 2> iov{
@@ -1560,7 +1579,13 @@ class coro_rpc_client {
                                    body_len},
               asio::mutable_buffer{attachment_buffer.mutable_data(),
                                    header.attach_length}};
+          profile_begin = coro_io::urma_benchmark_profile::enabled()
+                              ? coro_io::urma_benchmark_profile::now_ns()
+                              : 0;
           ret = co_await coro_io::async_read(socket, iov);
+          coro_io::urma_benchmark_profile::record_since(
+              coro_io::urma_benchmark_profile::stage::client_recv_payload,
+              profile_begin);
         }
       }
       auto cost_time = (std::chrono::steady_clock::now() - tp) /
@@ -1749,8 +1774,14 @@ class coro_rpc_client {
   async_simple::coro::Lazy<rpc_error> send_impl(
       Socket &socket, uint32_t &id, coro_io::data_view req_attachment,
       Args &&...args) {
+    auto prepare_begin = coro_io::urma_benchmark_profile::enabled()
+                             ? coro_io::urma_benchmark_profile::now_ns()
+                             : 0;
     auto buffer = prepare_buffer<func>(id, req_attachment.size(),
                                        std::forward<Args>(args)...);
+    coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::stage::client_prepare_request,
+        prepare_begin);
     if (buffer.empty()) {
       co_return rpc_error{errc::message_too_large};
     }
@@ -1821,6 +1852,9 @@ class coro_rpc_client {
             },
             control_->executor_);
       }
+      auto send_begin = coro_io::urma_benchmark_profile::enabled()
+                            ? coro_io::urma_benchmark_profile::now_ns()
+                            : 0;
       if (req_attachment.empty()) {
         ret = co_await coro_io::async_write(
             socket, asio::buffer(buffer.data(), buffer.size()));
@@ -1840,6 +1874,9 @@ class coro_rpc_client {
           ret = co_await coro_io::async_write(socket, iov);
         }
       }
+      coro_io::urma_benchmark_profile::record_since(
+          coro_io::urma_benchmark_profile::stage::client_send_request,
+          send_begin);
       write_mutex_ = false;
 #ifdef UNIT_TEST_INJECT
     }
