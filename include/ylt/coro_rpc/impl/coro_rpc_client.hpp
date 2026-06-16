@@ -1360,6 +1360,7 @@ class coro_rpc_client {
     std::unordered_map<uint32_t, handler_t> response_handler_table_;
     resp_body resp_buffer_;
     std::atomic<uint32_t> recving_cnt_ = 0;
+    std::atomic<bool> recv_running_ = false;
     uint64_t client_id = 0;
     control_t(coro_io::ExecutorWrapper<> *executor, bool is_timeout,
               const std::string &local_ip)
@@ -1612,9 +1613,17 @@ class coro_rpc_client {
       iter->second(std::move(controller->resp_buffer_), header.err_code);
       controller->response_handler_table_.erase(iter);
       if (controller->response_handler_table_.empty()) {
+        controller->recv_running_.store(false, std::memory_order_release);
+        // Re-check: a new send_request may have inserted a handler between
+        // the empty() check and the store. If so, restart the recv loop.
+        if (!controller->response_handler_table_.empty()) {
+          controller->recv_running_.store(true, std::memory_order_release);
+          continue;
+        }
         co_return;
       }
     } while (true);
+    controller->recv_running_.store(false, std::memory_order_release);
     close_socket_async(controller);
     send_err_response(controller.get(), ret.first);
     co_return;
@@ -1738,7 +1747,6 @@ class coro_rpc_client {
     if (!result) {
       async_simple::Promise<async_rpc_raw_result> promise;
       auto future = promise.getFuture();
-      bool is_empty = control_->response_handler_table_.empty();
       auto &&[_, is_ok] = control_->response_handler_table_.try_emplace(
           id, std::move(timer), std::move(promise),
           coro_io::data_view{config.resp_attachment_buf,
@@ -1749,9 +1757,18 @@ class coro_rpc_client {
             rpc_error{coro_rpc::errc::serial_number_conflict});
       }
       else {
-        if (is_empty) {
+        // Ensure at most one recv coroutine runs per connection.
+        // The previous is_empty check on response_handler_table_ was racy:
+        // multiple send_request coroutines could observe is_empty == true
+        // concurrently and each start a recv coroutine, causing multiple
+        // concurrent readers on the same URMA socket.
+        if (!control_->recv_running_.exchange(true)) {
           control_->socket_wrapper_.visit([control_ = control_](auto &socket) {
             recv(control_, socket).start([](auto &&) {
+              // recv_running_ is cleared inside the recv coroutine itself,
+              // so we don't reset it here. This avoids a race where the
+              // recv coroutine has decided to exit but a new handler was
+              // inserted before recv_running_ was cleared.
             });
           });
         }
@@ -1852,6 +1869,20 @@ class coro_rpc_client {
             },
             control_->executor_);
       }
+#ifdef YLT_ENABLE_URMA
+      // URMA backpressure: wait for send slots before posting new WRs.
+      // Without this, consecutive async_write calls (even serialized by
+      // write_mutex_) can overrun the remote JFR's pre-posted recv buffers,
+      // causing RNR retry exhaustion and WR_FLUSH_ERR.
+      if constexpr (std::is_same_v<Socket, coro_io::socket_wrapper_t::urma_socket_type>) {
+        auto slot_ec = co_await socket.waiting_write_over();
+        if (slot_ec) {
+          write_mutex_ = false;
+          close();
+          co_return rpc_error{errc::io_error, slot_ec.message()};
+        }
+      }
+#endif
       auto send_begin = coro_io::urma_benchmark_profile::enabled()
                             ? coro_io::urma_benchmark_profile::now_ns()
                             : 0;
