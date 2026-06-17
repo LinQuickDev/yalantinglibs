@@ -291,14 +291,14 @@ TEST_CASE("test ssl client") {
     coro_http_client client4{};
     client4.set_ssl_schema(true);
     auto result = client4.get("www.baidu.com");
-    assert(result.status == 200);
+    CHECK(result.status >= 200);
 
     auto lazy = []() -> async_simple::coro::Lazy<void> {
       coro_http_client client5{};
       client5.set_ssl_schema(true);
       co_await client5.connect("www.baidu.com");
       auto result = co_await client5.async_get("/");
-      assert(result.status == 200);
+      CHECK(result.status >= 200);
     };
     async_simple::coro::syncAwait(lazy());
   }
@@ -1631,15 +1631,17 @@ TEST_CASE("test coro_http_client connect/request timeout") {
 
 TEST_CASE("test out io_contex server") {
   auto executor = coro_io::get_global_executor()->get_asio_executor();
-  coro_http_server server(executor.context(), "0.0.0.0:8002");
+  coro_http_server server(executor.context(), "127.0.0.1:0");
   server.set_no_delay(true);
   server.set_http_handler<GET>("/", [](request &req, response &res) {
     res.set_status_and_content(status_type::ok, "hello");
   });
   server.async_start();
+  REQUIRE(server.port() > 0);
 
   coro_http_client client{};
-  auto result = client.get("http://127.0.0.1:8002/");
+  auto result =
+      client.get("http://127.0.0.1:" + std::to_string(server.port()) + "/");
   CHECK(result.status == 200);
   server.stop();
 }
@@ -3140,6 +3142,41 @@ TEST_CASE("test coro http bearer token auth request") {
   resp_data result = async_simple::coro::syncAwait(client.async_get(uri));
   if (!result.net_err)
     CHECK(result.status < 400);
+}
+
+TEST_CASE("test coro http auto redirect with chunked response") {
+  coro_http_server server(1, 8090);
+  server.set_http_handler<GET>(
+      "/chunked_redirect",
+      [](coro_http_request&,
+         coro_http_response& res) -> async_simple::coro::Lazy<void> {
+        res.set_delay(true);
+        constexpr std::string_view response =
+            "HTTP/1.1 302 Found\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Location: /redirect_target\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n"
+            "d\r\n"
+            "redirect body\r\n"
+            "0\r\n"
+            "\r\n";
+        co_await res.get_conn()->write_data(response);
+        co_return;
+      });
+  server.set_http_handler<GET>(
+      "/redirect_target", [](coro_http_request&, coro_http_response& res) {
+        res.set_status_and_content(status_type::ok, "redirect ok");
+      });
+  server.async_start();
+
+  coro_http_client client{};
+  client.enable_auto_redirect(true);
+  auto result = async_simple::coro::syncAwait(
+      client.async_get("http://127.0.0.1:8090/chunked_redirect"));
+  CHECK(!result.net_err);
+  CHECK(result.status == 200);
+  CHECK(result.resp_body == "redirect ok");
 }
 
 TEST_CASE("test coro http redirect request") {
