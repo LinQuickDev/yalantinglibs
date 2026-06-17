@@ -16,6 +16,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string_view>
 
@@ -68,5 +69,21 @@ class data_view : public std::string_view {
 
  private:
   int gpu_id_;  // GPU ID (-1 for CPU memory, >=0 for GPU memory)
+};
+
+struct owned_data_view {
+  data_view view;
+  std::shared_ptr<void> owner;
+
+  owned_data_view() = default;
+  owned_data_view(data_view view, std::shared_ptr<void> owner)
+      : view(view), owner(std::move(owner)) {}
+
+  bool empty() const noexcept { return view.empty(); }
+  const char* data() const noexcept { return view.data(); }
+  std::size_t size() const noexcept { return view.size(); }
+  int gpu_id() const noexcept { return view.gpu_id(); }
+  operator data_view() const noexcept { return view; }
+  operator std::string_view() const noexcept { return view; }
 };
 }  // namespace coro_io

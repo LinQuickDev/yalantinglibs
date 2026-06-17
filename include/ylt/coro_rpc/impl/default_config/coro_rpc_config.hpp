@@ -49,6 +49,9 @@ struct config_t {
   std::optional<coro_io::ib_socket_t::config_t> ibv_config = std::nullopt;
   std::vector<std::shared_ptr<coro_io::ib_device_t>> ibv_dev_lists;
 #endif
+#ifdef YLT_ENABLE_URMA
+  std::optional<coro_io::urma_socket_t::config_t> urma_config = std::nullopt;
+#endif
 
   using rpc_protocol = coro_rpc::protocol::coro_rpc_protocol;
   using executor_pool_t = coro_io::io_context_pool;

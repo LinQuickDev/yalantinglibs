@@ -31,6 +31,9 @@
 #include "struct_pack_protocol.hpp"
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/coro_io/data_view.hpp"
+#ifdef YLT_ENABLE_URMA
+#include "ylt/coro_io/urma/urma_io.hpp"
+#endif
 #include "ylt/coro_rpc/impl/context.hpp"
 #include "ylt/coro_rpc/impl/errno.h"
 #include "ylt/coro_rpc/impl/expected.hpp"
@@ -137,8 +140,37 @@ struct coro_rpc_protocol {
   static async_simple::coro::Lazy<std::error_code> read_payload(
       Socket& socket, req_header& req_head, std::string& buffer,
       coro_io::heterogeneous_buffer& attachment) {
+    co_return co_await read_payload(socket, req_head, buffer, attachment,
+                                    static_cast<context_info_t<
+                                        coro_rpc_protocol>*>(nullptr));
+  }
+
+  template <typename Socket>
+  static async_simple::coro::Lazy<std::error_code> read_payload(
+      Socket& socket, req_header& req_head, std::string& buffer,
+      coro_io::heterogeneous_buffer& attachment,
+      context_info_t<coro_rpc_protocol>* context_info) {
     struct_pack::detail::resize(buffer, req_head.length);
     if (req_head.attach_length > 0) {
+#ifdef YLT_ENABLE_URMA
+      if constexpr (std::is_same_v<std::remove_cvref_t<Socket>,
+                                   coro_io::urma_socket_t>) {
+        if (context_info != nullptr) {
+          if (!buffer.empty()) {
+            auto [body_ec, ignored] =
+                co_await coro_io::async_read(socket, asio::buffer(buffer));
+            if (body_ec) co_return body_ec;
+          }
+          attachment = coro_io::heterogeneous_buffer{};
+          auto [attachment_ec, views] =
+              co_await coro_io::detail::async_urma_read_views(
+                  socket, req_head.attach_length);
+          if (attachment_ec) co_return attachment_ec;
+          context_info->set_request_attachment_views(std::move(views));
+          co_return std::error_code{};
+        }
+      }
+#endif
       if constexpr (requires { socket.get_gpu_id(); }) {
         if (auto id = socket.get_gpu_id(); id >= 0) {
           if (attachment.size() < req_head.attach_length ||

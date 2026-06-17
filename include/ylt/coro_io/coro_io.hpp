@@ -612,6 +612,7 @@ inline async_simple::coro::Lazy<std::error_code> async_connect(
   co_return ec;
 }
 #endif
+
 class period_timer : public asio::steady_timer {
  public:
   using asio::steady_timer::steady_timer;
