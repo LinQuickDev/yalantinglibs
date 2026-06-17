@@ -452,7 +452,7 @@ struct urma_socket_shared_state_t
   std::optional<async_simple::Promise<std::error_code>> write_promise_;
   std::atomic<bool> has_close_{false};
   bool peer_close_ = false;
-  static constexpr std::chrono::microseconds idle_poll_interval_{50};
+  static constexpr std::chrono::microseconds idle_poll_interval_{5};
   static constexpr std::size_t max_active_poll_budget_ = 64;
   std::size_t active_poll_budget_ = max_active_poll_budget_;
   std::string init_stage_;
