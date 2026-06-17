@@ -36,6 +36,7 @@
 #include "asio/ip/tcp.hpp"
 #include "asio/posix/stream_descriptor.hpp"
 #include "async_simple/Future.h"
+#include "async_simple/Promise.h"
 #include "async_simple/Signal.h"
 #include "async_simple/coro/FutureAwaiter.h"
 #include "async_simple/coro/Lazy.h"

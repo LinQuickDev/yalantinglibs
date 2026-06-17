@@ -34,6 +34,7 @@
 #include "asio/ip/tcp.hpp"
 #include "asio/steady_timer.hpp"
 #include "async_simple/Future.h"
+#include "async_simple/Promise.h"
 #include "async_simple/coro/FutureAwaiter.h"
 #include "async_simple/coro/Lazy.h"
 #include "async_simple/util/move_only_function.h"
