@@ -62,6 +62,7 @@
 #include "ylt/coro_io/ibverbs/ib_socket.hpp"
 #endif
 #ifdef YLT_ENABLE_URMA
+#include "ylt/coro_io/urma/urma_rpc_env.hpp"
 #include "ylt/coro_io/urma/urma_socket.hpp"
 #endif
 #include "ylt/coro_io/data_view.hpp"
@@ -616,13 +617,20 @@ class coro_rpc_client {
   [[nodiscard]] bool init_config(const config &conf) {
     create_tp_ = std::chrono::steady_clock::now();
     config_ = conf;
+#ifdef YLT_ENABLE_URMA
+    if (std::holds_alternative<tcp_config>(config_.socket_config)) {
+      if (auto urma_config = coro_io::try_make_urma_rpc_config()) {
+        config_.socket_config = *urma_config;
+      }
+    }
+#endif
     control_->socket_wrapper_.set_local_ip(config_.local_ip);
-    control_->client_id = conf.client_id;
+    control_->client_id = config_.client_id;
     return std::visit(
         [this](auto &socket_config) {
           return init_socket_wrapper(socket_config);
         },
-        conf.socket_config);
+        config_.socket_config);
   };
 
   auto get_create_time_point() const noexcept { return create_tp_; }

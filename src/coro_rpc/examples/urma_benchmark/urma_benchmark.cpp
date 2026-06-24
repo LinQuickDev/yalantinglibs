@@ -94,6 +94,29 @@ void status(std::string_view message) {
   std::cout << "[urma_benchmark] " << message << std::endl;
 }
 
+uint64_t effective_pool_memory_usage(const options_t& opt);
+
+void set_process_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
+}
+
+void configure_urma_rpc_env(const options_t& opt) {
+  set_process_env("URMA_RPC_ENABLE", "1");
+  set_process_env("URMA_RPC_DEVICE", opt.device);
+  set_process_env("URMA_RPC_EID_INDEX", std::to_string(opt.eid_index));
+  set_process_env("URMA_RPC_CQ_SIZE", std::to_string(opt.queue_depth * 2 + 8));
+  set_process_env("URMA_RPC_RECV_BUFFER_CNT", std::to_string(opt.queue_depth));
+  set_process_env("URMA_RPC_SEND_BUFFER_CNT", std::to_string(opt.queue_depth));
+  set_process_env("URMA_RPC_BUFFER_SIZE", std::to_string(opt.buffer_size));
+  set_process_env("URMA_RPC_MAX_MEMORY_USAGE",
+                  std::to_string(effective_pool_memory_usage(opt)));
+  set_process_env("URMA_RPC_TP_TYPE", "ctp");
+}
+
 void print_usage(const char* program) {
   std::cout
       << "Usage:\n"
@@ -361,11 +384,7 @@ bool init_global_urma(const options_t& opt) {
 Lazy<bool> connect_client(coro_rpc_client& client, const options_t& opt,
                           uint32_t client_index = 0) {
   std::cout << "[urma_benchmark] client " << client_index
-            << " initializing URMA socket" << std::endl;
-  if (!client.init_urma(make_urma_config(opt))) {
-    ELOG_ERROR << "init URMA client failed";
-    co_return false;
-  }
+            << " using URMA RPC auto configuration" << std::endl;
   std::cout << "[urma_benchmark] client " << client_index << " connecting to "
             << opt.host << ":" << opt.port << std::endl;
   auto ec = co_await client.connect(opt.host, std::to_string(opt.port), 30s);
@@ -732,10 +751,10 @@ int run_server(const options_t& opt) {
             << ", queue_depth=" << opt.queue_depth
             << ", max_memory_mib="
             << effective_pool_memory_usage(opt) / 1024 / 1024 << std::endl;
+  configure_urma_rpc_env(opt);
   if (!init_global_urma(opt)) return 1;
-  status("constructing RPC server");
+  status("constructing RPC server with URMA RPC auto configuration");
   coro_rpc_server server(opt.server_threads, opt.port, opt.host);
-  server.init_urma(make_urma_config(opt));
   server.register_handler<bench_echo>();
   server.register_handler<bench_sink>();
   server.register_handler<bench_attachment_sink>();
@@ -775,6 +794,7 @@ int run_client(const options_t& opt) {
     if (opt.profile) coro_io::urma_benchmark_profile::print(std::cout);
     return 0;
   }
+  configure_urma_rpc_env(opt);
   if (!init_global_urma(opt)) return 1;
   std::cout << "URMA RPC benchmark client target " << opt.host << ":"
             << opt.port << ", mode=" << opt.mode
