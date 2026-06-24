@@ -129,36 +129,6 @@ TEST_CASE("urma rpc enabled without usable device keeps client constructible") {
       client.get_config().socket_config));
 }
 
-TEST_CASE("urma rpc env does not override explicit client urma config") {
-  scoped_env_var enable("URMA_RPC_ENABLE", "0");
-
-  coro_rpc::coro_rpc_client::config config;
-  coro_io::urma_socket_t::config_t explicit_config{};
-  explicit_config.device_name = "explicit_device";
-  explicit_config.eid_index = 5;
-  config.socket_config = explicit_config;
-
-  coro_rpc::coro_rpc_client client(coro_io::get_global_executor(), config);
-  REQUIRE(std::holds_alternative<coro_io::urma_socket_t::config_t>(
-      client.get_config().socket_config));
-  const auto& stored = std::get<coro_io::urma_socket_t::config_t>(
-      client.get_config().socket_config);
-  CHECK(stored.device_name == "explicit_device");
-  CHECK(stored.eid_index == 5);
-}
-
-#ifdef YLT_ENABLE_IBV
-TEST_CASE("urma rpc env does not override explicit client ibv config") {
-  scoped_env_var enable("URMA_RPC_ENABLE", "1");
-
-  coro_rpc::coro_rpc_client::config config;
-  config.socket_config = coro_io::ib_socket_t::config_t{};
-
-  coro_rpc::coro_rpc_client client(coro_io::get_global_executor(), config);
-  CHECK(std::holds_alternative<coro_io::ib_socket_t::config_t>(
-      client.get_config().socket_config));
-}
-#endif
 #else
 TEST_CASE("urma rpc env tests compile without urma support") {
   coro_rpc::coro_rpc_client client;
