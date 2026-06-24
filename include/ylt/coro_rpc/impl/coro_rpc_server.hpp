@@ -45,6 +45,9 @@
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/coro_io/io_context_pool.hpp"
 #include "ylt/coro_io/server_acceptor.hpp"
+#ifdef YLT_ENABLE_URMA
+#include "ylt/coro_io/urma/urma_rpc_env.hpp"
+#endif
 #include "ylt/coro_rpc/impl/errno.h"
 #include "ylt/coro_rpc/impl/expected.hpp"
 namespace coro_rpc {
@@ -174,6 +177,19 @@ class coro_rpc_server_base {
   void init_urma(const coro_io::urma_socket_t::config_t &conf = {}) {
     urma_config_ = conf;
   }
+
+  void init_urma_from_env_if_default() {
+    if (urma_config_.has_value()) return;
+#ifdef YLT_ENABLE_IBV
+    if (ibv_config_.has_value()) return;
+#endif
+#ifdef YLT_ENABLE_SSL
+    if (use_ssl_) return;
+#endif
+    if (auto urma_config = coro_io::try_make_urma_rpc_config()) {
+      urma_config_ = *urma_config;
+    }
+  }
 #endif
 
   /*!
@@ -213,6 +229,9 @@ class coro_rpc_server_base {
         return make_error_future(
             coro_rpc::err_code{coro_rpc::errc::server_has_ran});
       }
+#ifdef YLT_ENABLE_URMA
+      init_urma_from_env_if_default();
+#endif
       for (auto &acceptor : acceptors_) {
         acceptor->set_io_threads_pool(&pool_);
         auto ec = acceptor->listen();

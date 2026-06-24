@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include "async_simple/coro/SyncAwait.h"
@@ -31,6 +33,25 @@
 using namespace coro_rpc;
 using namespace async_simple::coro;
 using namespace std::chrono_literals;
+
+void set_process_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
+}
+
+void configure_urma_rpc_auto_env() {
+  set_process_env("URMA_RPC_ENABLE", "1");
+  set_process_env("URMA_RPC_DEVICE", "bonding_dev_0");
+  set_process_env("URMA_RPC_EID_INDEX", "0");
+  set_process_env("URMA_RPC_RECV_BUFFER_CNT", "64");
+  set_process_env("URMA_RPC_SEND_BUFFER_CNT", "64");
+  set_process_env("URMA_RPC_BUFFER_SIZE", std::to_string(4 * 1024));
+  set_process_env("URMA_RPC_MAX_MEMORY_USAGE", std::to_string(20 * 1024 * 1024));
+  set_process_env("URMA_RPC_TP_TYPE", "ctp");
+}
 
 std::string_view echo(std::string_view data) { return data; }
 
@@ -67,11 +88,10 @@ bool warmup_urma_rpc(coro_rpc_client& client) {
 // The basic example about how to start a rpc connection over URMA.
 void basic_example() {
   ELOG_INFO << "basic_example: starting";
+  configure_urma_rpc_auto_env();
   coro_rpc_client client;
   coro_rpc_server server;
 
-  ELOG_INFO << "basic_example: calling server.init_urma";
-  server.init_urma();
   ELOG_INFO << "set_option: registering handler";
   server.register_handler<echo>();
   ELOG_INFO << "set_option: handler registered";
@@ -83,7 +103,7 @@ void basic_example() {
     return;
   }
 
-  // Client connects to server - URMA is auto-initialized from server config
+  // Client and server keep default TCP config; URMA_RPC_* enables the URMA upgrade.
   ELOG_INFO << "set_option: server address=" << server.address() << " port=" << server.port();
   auto ec = syncAwait(client.connect(std::string{server.address()} + ":" +
                                      std::to_string(server.port())));
