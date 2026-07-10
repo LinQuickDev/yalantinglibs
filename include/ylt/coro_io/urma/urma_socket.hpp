@@ -80,6 +80,9 @@ struct urma_deleter {
   void operator()(urma_target_jetty_t* value) const {
     if (value) urma_unimport_jetty(value);
   }
+  void operator()(urma_target_seg_t* value) const {
+    if (value) urma_unimport_seg(value);
+  }
 };
 
 struct urma_socket_shared_state_t
@@ -430,6 +433,7 @@ struct urma_socket_shared_state_t
       auto buffer = recv_queue_.pop();
       device_->get_buffer_pool()->return_buffer(buffer);
     }
+    remote_seg_.reset();
     remote_jetty_.reset();
     jetty_.reset();
     jfr_.reset();
@@ -444,6 +448,7 @@ struct urma_socket_shared_state_t
   std::unique_ptr<urma_jfr_t, urma_deleter> jfr_;
   std::unique_ptr<urma_jetty_t, urma_deleter> jetty_;
   std::unique_ptr<urma_target_jetty_t, urma_deleter> remote_jetty_;
+  std::unique_ptr<urma_target_seg_t, urma_deleter> remote_seg_;
   std::size_t recv_buffer_cnt_;
   circle_buffer<urma_buffer_t> recv_queue_;
   circle_buffer<pending_recv> recv_result_;
@@ -485,6 +490,7 @@ class urma_socket_t {
     uint32_t buffer_size;
     uint16_t recv_buffer_cnt;
     uint8_t tp_type;
+    urma_seg_t seg;  // buffer pool segment for import_seg
     constexpr static auto struct_pack_config = struct_pack::DISABLE_TYPE_INFO;
   };
 
@@ -766,6 +772,7 @@ class urma_socket_t {
     info.buffer_size = buffer_pool()->buffer_size();
     info.recv_buffer_cnt = conf_.recv_buffer_cnt;
     info.tp_type = static_cast<uint8_t>(conf_.tp_type);
+    info.seg = buffer_pool()->seg();
     return info;
   }
 
@@ -782,6 +789,31 @@ class urma_socket_t {
       return std::make_error_code(std::errc::protocol_error);
     }
     remote.tp_type = static_cast<urma_tp_type_t>(peer.tp_type);
+
+    // Import the peer's buffer pool segment BEFORE importing the jetty.
+    // The URMA perftest reference implementation calls urma_import_seg
+    // before urma_import_jetty/urma_import_jetty_ex.  Without this step,
+    // the kernel may not establish the transport path (TP) routing for
+    // the remote EID, causing the first SEND to be immediately rejected
+    // by hardware with URMA_CR_RNR_RETRY_CNT_EXC_ERR (status=10).
+    urma_token_t seg_token{};
+    urma_import_seg_flag_t seg_flag{};
+    seg_flag.bs.cacheable = URMA_NON_CACHEABLE;
+    seg_flag.bs.access =
+        URMA_ACCESS_READ | URMA_ACCESS_WRITE | URMA_ACCESS_ATOMIC;
+    seg_flag.bs.mapping = URMA_SEG_NOMAP;
+    urma_seg_t peer_seg = peer.seg;
+    state_->remote_seg_.reset(
+        urma_import_seg(state_->device_->context(), &peer_seg,
+                        &seg_token, 0, seg_flag));
+    if (!state_->remote_seg_) {
+      ELOG_WARN << "urma_import_seg failed: errno=" << errno
+                << ", continuing with urma_import_jetty";
+    } else {
+      ELOG_INFO << "urma_import_seg succeeded for peer EID="
+                << eid_to_address(peer.eid).to_string();
+    }
+
     urma_token_t token{};
     errno = 0;
     state_->remote_jetty_.reset(

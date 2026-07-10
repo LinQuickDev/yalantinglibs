@@ -67,6 +67,11 @@ class urma_buffer_pool_t {
   size_t total_buffer_count() const { return config_.buffer_count; }
   size_t total_memory_size() const { return allocation_size_; }
   size_t free_buffer_count() const;
+#ifdef YLT_ENABLE_URMA
+  urma_seg_t seg() const {
+    return seg_ ? reinterpret_cast<urma_target_seg_t*>(seg_)->seg : urma_seg_t{};
+  }
+#endif
   size_t outstanding_buffer_count() const {
     return outstanding_buffers_.load(std::memory_order_relaxed);
   }
