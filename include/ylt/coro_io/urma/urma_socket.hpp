@@ -502,6 +502,8 @@ struct urma_socket_shared_state_t
       // follows an event under request/response traffic.  Each poll that yields
       // completions resets the idle counter so a steady stream never sleeps;
       // only `busy_poll_budget_` consecutive empty polls trigger rearm+sleep.
+      // After processing completions, yield to the executor so other sockets'
+      // event_loop coroutines are not starved (which would inflate p99/max).
       std::size_t idle_spins = 0;
       while (!has_close_) {
         auto [poll_ec, n] = poll_completion();
@@ -515,6 +517,14 @@ struct urma_socket_shared_state_t
           continue;
         }
         idle_spins = 0;
+        // Yield to the scheduler after processing completions so peer sockets
+        // get a turn; without this a single socket's spin monopolizes the
+        // executor thread and starves the rest, spiking tail latency.
+        coro_io::callback_awaitor<void> yield_awaitor;
+        co_await yield_awaitor.await_resume([&self](auto handler) {
+          asio::post(self->executor_->get_asio_executor(),
+                     [handler]() mutable { handler.resume(); });
+        });
       }
     }
   loop_end:;
