@@ -476,8 +476,14 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       ELOG_WARN << "rpc route/execute error, error msg: " << resp_error_msg
                 << ", conn_id = " << conn_id_;
     }
+    auto ser_begin = coro_io::urma_benchmark_profile::enabled()
+                          ? coro_io::urma_benchmark_profile::now_ns()
+                          : 0;
     std::string header_buf = rpc_protocol::prepare_response(
         resp_buf, req_head, attachment().length(), resp_err, resp_error_msg);
+    coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::stage::server_serialize_response,
+        ser_begin);
 
     response(start_tp, req_id, std::move(header_buf), std::move(resp_buf),
              std::move(attachment), std::move(complete_handler), nullptr)
@@ -492,8 +498,14 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
                     const typename rpc_protocol::req_header &req_head,
                     std::function<void(const std::error_code &, std::size_t)>
                         &&complete_handler) {
+    auto ser_begin = coro_io::urma_benchmark_profile::enabled()
+                          ? coro_io::urma_benchmark_profile::now_ns()
+                          : 0;
     std::string header_buf = rpc_protocol::prepare_response(
         body_buf, req_head, resp_attachment().size());
+    coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::stage::server_serialize_response,
+        ser_begin);
     asio::dispatch(
         socket_wrapper_.get_executor()->get_asio_executor(),
         [watcher = weak_from_this(), header_buf = std::move(header_buf),
@@ -518,8 +530,14 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
                       std::function<void(const std::error_code &, std::size_t)>
                           &&complete_handler) {
     std::string body_buf;
+    auto ser_begin = coro_io::urma_benchmark_profile::enabled()
+                          ? coro_io::urma_benchmark_profile::now_ns()
+                          : 0;
     std::string header_buf =
         rpc_protocol::prepare_response(body_buf, req_head, 0, ec, error_msg);
+    coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::stage::server_serialize_response,
+        ser_begin);
     asio::dispatch(
         socket_wrapper_.get_executor()->get_asio_executor(),
         [watcher = weak_from_this(), header_buf = std::move(header_buf),

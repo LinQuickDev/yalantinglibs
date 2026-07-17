@@ -1782,8 +1782,14 @@ class coro_rpc_client {
 
     bool has_error = false;
     auto &ret = std::get<0>(ret_);
+    auto deser_begin = coro_io::urma_benchmark_profile::enabled()
+                           ? coro_io::urma_benchmark_profile::now_ns()
+                           : 0;
     auto result = handle_response_buffer<T>(ret.buffer_.read_buf_, ret.errc_,
                                             has_error, client_id);
+    coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::stage::client_deserialize_response,
+        deser_begin);
     if (has_error) {
       if (auto w = watcher.lock(); w) {
         close_socket_async(std::move(w));

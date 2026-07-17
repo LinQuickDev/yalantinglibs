@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -35,9 +36,11 @@ enum class stage : uint8_t {
   client_send_request,
   client_recv_header,
   client_recv_payload,
+  client_deserialize_response,
   server_read_header,
   server_read_payload,
   server_dispatch,
+  server_serialize_response,
   server_response_queue,
   server_send_response,
   urma_write_total,
@@ -59,9 +62,11 @@ inline constexpr std::array<std::string_view,
         "client.send_request",
         "client.recv_header",
         "client.recv_payload",
+        "client.deserialize_response",
         "server.read_header",
         "server.read_payload",
         "server.dispatch",
+        "server.serialize_response",
         "server.response_queue",
         "server.send_response",
         "urma.write_total",
@@ -84,7 +89,28 @@ inline std::atomic<uint32_t>& sample_rate_value() {
   return value;
 }
 
+inline void init_from_env() {
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    const char* env = std::getenv("YLT_RPC_PROFILE_ENABLE");
+    if (env && (std::string_view(env) == "1" ||
+                std::string_view(env) == "on" ||
+                std::string_view(env) == "true")) {
+      enabled_flag().store(true, std::memory_order_relaxed);
+    }
+    const char* rate = std::getenv("YLT_RPC_PROFILE_SAMPLE_RATE");
+    if (rate && *rate) {
+      uint32_t r = 0;
+      for (const char* p = rate; *p >= '0' && *p <= '9'; ++p)
+        r = r * 10 + (*p - '0');
+      if (r > 0) sample_rate_value().store(r, std::memory_order_relaxed);
+    }
+  });
+}
+
 inline bool enabled() noexcept {
+  if (enabled_flag().load(std::memory_order_relaxed)) return true;
+  init_from_env();
   return enabled_flag().load(std::memory_order_relaxed);
 }
 
@@ -164,7 +190,7 @@ inline void print(std::ostream& os) {
     }
   }
 
-  os << "urma_profile sample_rate="
+  os << "rpc_profile sample_rate="
      << sample_rate_value().load(std::memory_order_relaxed)
      << " unit=us\n";
   os << std::fixed << std::setprecision(2);
@@ -180,10 +206,12 @@ inline void print(std::ostream& os) {
         samples.begin(), samples.end(), static_cast<long double>(0),
         [](long double lhs, uint64_t rhs) { return lhs + rhs; });
     auto avg = static_cast<double>(sum / samples.size()) / 1000.0;
-    os << "urma_profile_stage name=" << stage_names[i]
+    os << "rpc_profile_stage name=" << stage_names[i]
        << " count=" << samples.size() << " avg=" << avg
+       << " p50=" << percentile(0.50)
+       << " p90=" << percentile(0.90)
        << " p99=" << percentile(0.99)
-       << " p9999=" << percentile(0.9999)
+       << " p999=" << percentile(0.999)
        << " max=" << static_cast<double>(samples.back()) / 1000.0 << "\n";
   }
 }
