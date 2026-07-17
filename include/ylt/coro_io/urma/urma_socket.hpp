@@ -47,6 +47,7 @@
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack.hpp"
 #include "ylt/urma/urma_api.h"
+#include "ylt/urma/urma_ubagg.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -979,8 +980,20 @@ class urma_socket_t {
 
     urma_token_t token{};
     errno = 0;
-    state_->remote_jetty_.reset(
-        urma_import_jetty(state_->device_->context(), &remote, &token));
+    auto dev_name = state_->device_->name();
+    if (dev_name.compare(0, 7, "bonding") == 0 &&
+        remote.trans_mode == URMA_TM_RM) {
+      bondp_rjetty_t bondp_rjetty{};
+      bondp_rjetty.base = remote;
+      bondp_rjetty.base.flag.bs.has_drv_ext = 1;
+      bondp_rjetty.jetty = state_->jetty_.get();
+      state_->remote_jetty_.reset(
+          urma_import_jetty(state_->device_->context(),
+                            &bondp_rjetty.base, &token));
+    } else {
+      state_->remote_jetty_.reset(
+          urma_import_jetty(state_->device_->context(), &remote, &token));
+    }
     if (!state_->remote_jetty_) {
       auto error = errno != 0
                        ? std::error_code(errno, std::generic_category())
