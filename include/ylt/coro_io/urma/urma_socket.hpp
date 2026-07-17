@@ -636,7 +636,13 @@ class urma_socket_t {
     uint32_t buffer_size;
     uint16_t recv_buffer_cnt;
     uint8_t tp_type;
-    urma_seg_t seg;  // buffer pool segment for import_seg
+    // Flattened from urma_seg_t which contains unions/bitfields not
+    // trivially serializable by struct_pack.
+    uint8_t seg_eid[16];
+    uint32_t seg_uasid;
+    uint64_t seg_va;
+    uint64_t seg_len;
+    uint32_t seg_token_id;
     constexpr static auto struct_pack_config = struct_pack::DISABLE_TYPE_INFO;
   };
 
@@ -919,7 +925,12 @@ class urma_socket_t {
     info.buffer_size = buffer_pool()->buffer_size();
     info.recv_buffer_cnt = conf_.recv_buffer_cnt;
     info.tp_type = static_cast<uint8_t>(conf_.tp_type);
-    info.seg = buffer_pool()->seg();
+    auto pool_seg = buffer_pool()->seg();
+    std::memcpy(info.seg_eid, pool_seg.ubva.eid.raw, sizeof(info.seg_eid));
+    info.seg_uasid = pool_seg.ubva.uasid;
+    info.seg_va = pool_seg.ubva.va;
+    info.seg_len = pool_seg.len;
+    info.seg_token_id = pool_seg.token_id;
     return info;
   }
 
@@ -949,7 +960,12 @@ class urma_socket_t {
     seg_flag.bs.access =
         URMA_ACCESS_READ | URMA_ACCESS_WRITE | URMA_ACCESS_ATOMIC;
     seg_flag.bs.mapping = URMA_SEG_NOMAP;
-    urma_seg_t peer_seg = peer.seg;
+    urma_seg_t peer_seg{};
+    std::memcpy(peer_seg.ubva.eid.raw, peer.seg_eid, sizeof(peer.seg_eid));
+    peer_seg.ubva.uasid = peer.seg_uasid;
+    peer_seg.ubva.va = peer.seg_va;
+    peer_seg.len = peer.seg_len;
+    peer_seg.token_id = peer.seg_token_id;
     state_->remote_seg_.reset(
         urma_import_seg(state_->device_->context(), &peer_seg,
                         &seg_token, 0, seg_flag));
