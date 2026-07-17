@@ -464,7 +464,11 @@ struct urma_socket_shared_state_t
           if (++consecutive_rearm_failures > 16) {
             ELOG_WARN << "URMA rearm_jfc keeps failing after drain; yielding";
             consecutive_rearm_failures = 0;
-            co_await coro_io::post([] {}, executor_);
+            coro_io::callback_awaitor<void> yield_awaitor;
+            co_await yield_awaitor.await_resume([&self](auto handler) {
+              asio::post(self->executor_->get_asio_executor(),
+                         [handler]() mutable { handler.resume(); });
+            });
           }
           continue;
         }
