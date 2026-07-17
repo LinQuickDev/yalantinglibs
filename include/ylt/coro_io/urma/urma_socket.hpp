@@ -449,6 +449,10 @@ struct urma_socket_shared_state_t
   }
 
   // Event-driven completion loop: rearm -> wait -> ack -> poll drain -> rearm.
+  // After an event wakeup, spin briefly (poll without sleeping) to catch the
+  // burst of completions that typically follow, avoiding repeated event
+  // wakeup latency under request/response workloads.  Only when the spin
+  // budget is exhausted without new completions do we rearm and sleep.
   async_simple::coro::Lazy<void> event_loop() {
     auto self = shared_from_this();
     std::error_code ec;
@@ -494,23 +498,26 @@ struct urma_socket_shared_state_t
         uint32_t ack_cnt = 1;
         urma_ack_jfc(&ev_jfc, &ack_cnt, 1);
       }
-      auto [poll_ec, n] = poll_completion();
-      if (poll_ec) {
-        fail_pending(poll_ec);
-        close();
-        break;
-      }
-      for (std::size_t i = 0; i < busy_poll_budget_ && n > 0 && !has_close_;
-           ++i) {
-        auto [e, c] = poll_completion();
-        if (e) {
-          fail_pending(e);
+      // Drain completions, then spin-poll to batch the burst that typically
+      // follows an event under request/response traffic.  Each poll that yields
+      // completions resets the idle counter so a steady stream never sleeps;
+      // only `busy_poll_budget_` consecutive empty polls trigger rearm+sleep.
+      std::size_t idle_spins = 0;
+      while (!has_close_) {
+        auto [poll_ec, n] = poll_completion();
+        if (poll_ec) {
+          fail_pending(poll_ec);
           close();
-          break;
+          goto loop_end;
         }
-        n = c;
+        if (n == 0) {
+          if (++idle_spins >= busy_poll_budget_) break;
+          continue;
+        }
+        idle_spins = 0;
       }
     }
+  loop_end:;
   }
 
   // Start the completion watcher; event-driven loop or legacy busy poll.
@@ -602,7 +609,7 @@ struct urma_socket_shared_state_t
   std::atomic<bool> has_close_{false};
   bool peer_close_ = false;
   bool event_mode_enabled_ = false;
-  std::size_t busy_poll_budget_ = 8;
+  std::size_t busy_poll_budget_ = 64;
   static constexpr std::chrono::microseconds idle_poll_interval_{5};
   static constexpr std::size_t max_active_poll_budget_ = 64;
   std::size_t active_poll_budget_ = max_active_poll_budget_;
@@ -624,7 +631,7 @@ class urma_socket_t {
     int eid_index = 0;
     urma_tp_type_t tp_type = URMA_CTP;
     bool event_mode = true;
-    std::size_t busy_poll_budget = 8;
+    std::size_t busy_poll_budget = 64;
   };
 
   enum io_type { recv = 0, send = 1 };
