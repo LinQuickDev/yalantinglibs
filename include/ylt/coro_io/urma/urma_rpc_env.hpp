@@ -51,6 +51,21 @@ inline bool urma_rpc_env_enabled() {
          normalized == "yes";
 }
 
+inline bool urma_rpc_env_flag(const char* name, bool default_value) {
+  const char* value = urma_rpc_getenv(name);
+  if (value == nullptr || *value == '\0') return default_value;
+  auto normalized = urma_rpc_lower_ascii(value);
+  if (normalized == "1" || normalized == "on" || normalized == "true" ||
+      normalized == "yes")
+    return true;
+  if (normalized == "0" || normalized == "off" || normalized == "false" ||
+      normalized == "no")
+    return false;
+  ELOG_WARN << "invalid " << name << " value: " << value
+            << "; use default " << (default_value ? "true" : "false");
+  return default_value;
+}
+
 template <typename T>
 inline bool urma_rpc_parse_integer(std::string_view value, T& output) {
   static_assert(std::is_integral_v<T>);
@@ -113,6 +128,10 @@ inline coro_io::urma_socket_t::config_t make_urma_rpc_config_from_env() {
   urma_rpc_parse_env_integer("URMA_RPC_MAX_MEMORY_USAGE",
                                config.max_memory_usage);
   urma_rpc_parse_env_tp_type(config.tp_type);
+  config.event_mode =
+      urma_rpc_env_flag("URMA_RPC_EVENT_MODE", /*default*/ true);
+  urma_rpc_parse_env_integer("URMA_RPC_BUSY_POLL_BUDGET",
+                               config.busy_poll_budget);
 
   return config;
 }
@@ -140,7 +159,9 @@ probe_urma_rpc_config(coro_io::urma_socket_t::config_t config) {
               << ", recv_buffer_cnt=" << config.recv_buffer_cnt
               << ", send_buffer_cnt=" << config.send_buffer_cnt
               << ", buffer_size=" << config.buffer_size
-              << ", max_memory_usage=" << config.max_memory_usage;
+              << ", max_memory_usage=" << config.max_memory_usage
+              << ", event_mode=" << (config.event_mode ? "on" : "off")
+              << ", busy_poll_budget=" << config.busy_poll_budget;
     return config;
   } catch (const std::exception& e) {
     ELOG_WARN << "URMA RPC auto enable failed: " << e.what()

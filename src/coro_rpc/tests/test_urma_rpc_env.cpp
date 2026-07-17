@@ -112,6 +112,34 @@ TEST_CASE("urma rpc env config parsing uses defaults for invalid values") {
   CHECK(config.tp_type == URMA_RTP);
 }
 
+TEST_CASE("urma rpc env event mode defaults to on and can be overridden") {
+  {
+    scoped_env_var enable("URMA_RPC_ENABLE", "1");
+    auto config = coro_io::detail::make_urma_rpc_config_from_env();
+    CHECK(config.event_mode == true);
+    CHECK(config.busy_poll_budget ==
+          coro_io::urma_socket_t::config_t{}.busy_poll_budget);
+  }
+  {
+    scoped_env_var enable("URMA_RPC_ENABLE", "1");
+    scoped_env_var mode("URMA_RPC_EVENT_MODE", "0");
+    auto config = coro_io::detail::make_urma_rpc_config_from_env();
+    CHECK(config.event_mode == false);
+  }
+  {
+    scoped_env_var enable("URMA_RPC_ENABLE", "1");
+    scoped_env_var mode("URMA_RPC_EVENT_MODE", "off");
+    auto config = coro_io::detail::make_urma_rpc_config_from_env();
+    CHECK(config.event_mode == false);
+  }
+  {
+    scoped_env_var enable("URMA_RPC_ENABLE", "1");
+    scoped_env_var budget("URMA_RPC_BUSY_POLL_BUDGET", "32");
+    auto config = coro_io::detail::make_urma_rpc_config_from_env();
+    CHECK(config.busy_poll_budget == 32);
+  }
+}
+
 TEST_CASE("urma rpc env disabled keeps default client tcp config") {
   scoped_env_var enable("URMA_RPC_ENABLE", "0");
 

@@ -32,6 +32,7 @@
 #include "asio/dispatch.hpp"
 #include "asio/ip/address.hpp"
 #include "asio/ip/tcp.hpp"
+#include "asio/posix/stream_descriptor.hpp"
 #include "asio/steady_timer.hpp"
 #include "async_simple/Future.h"
 #include "async_simple/Promise.h"
@@ -46,6 +47,9 @@
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack.hpp"
 #include "ylt/urma/urma_api.h"
+
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace coro_io {
 namespace detail {
@@ -76,6 +80,9 @@ struct urma_deleter {
   }
   void operator()(urma_jetty_t* value) const {
     if (value) urma_delete_jetty(value);
+  }
+  void operator()(urma_jfce_t* value) const {
+    if (value) urma_delete_jfce(value);
   }
   void operator()(urma_target_jetty_t* value) const {
     if (value) urma_unimport_jetty(value);
@@ -125,7 +132,8 @@ struct urma_socket_shared_state_t
     }
   }
 
-  bool init(std::size_t cq_size, std::size_t send_buffer_cnt) {
+  bool init(std::size_t cq_size, std::size_t send_buffer_cnt,
+            bool event_mode) {
     const auto& cap = device_->attr().dev_cap;
     ELOG_INFO << "URMA resource init: device=" << device_->name()
               << ", eid=" << device_->eid_string()
@@ -136,10 +144,28 @@ struct urma_socket_shared_state_t
               << ", jfs_depth=" << send_buffer_cnt + 2
               << ", max_jfc_depth=" << cap.max_jfc_depth
               << ", max_jfr_depth=" << cap.max_jfr_depth
-              << ", max_jfs_depth=" << cap.max_jfs_depth;
+              << ", max_jfs_depth=" << cap.max_jfs_depth
+              << ", event_mode=" << event_mode;
+
+    // Create JFCE first so it can be bound to the JFC at creation time.
+    if (event_mode) {
+      errno = 0;
+      jfce_.reset(urma_create_jfce(device_->context()));
+      if (!jfce_) {
+        ELOG_WARN << "urma_create_jfce failed: errno=" << errno
+                  << ", event_mode disabled, fall back to busy polling";
+        event_mode_enabled_ = false;
+      } else {
+        ELOG_INFO << "urma_create_jfce succeeded: fd=" << jfce_->fd;
+        event_mode_enabled_ = true;
+      }
+    } else {
+      event_mode_enabled_ = false;
+    }
 
     urma_jfc_cfg_t jfc_cfg{};
     jfc_cfg.depth = static_cast<uint32_t>(cq_size);
+    if (event_mode_enabled_) jfc_cfg.jfce = jfce_.get();
     errno = 0;
     jfc_.reset(urma_create_jfc(device_->context(), &jfc_cfg));
     if (!jfc_) {
@@ -151,7 +177,8 @@ struct urma_socket_shared_state_t
       return false;
     }
     ELOG_INFO << "urma_create_jfc succeeded: jfc_id="
-              << jfc_->jfc_id.id << ", depth=" << jfc_cfg.depth;
+              << jfc_->jfc_id.id << ", depth=" << jfc_cfg.depth
+              << ", jfce=" << (event_mode_enabled_ ? "bound" : "null");
 
     urma_jfr_cfg_t jfr_cfg{};
     jfr_cfg.depth = static_cast<uint32_t>(recv_buffer_cnt_ + 1);
@@ -392,6 +419,111 @@ struct urma_socket_shared_state_t
     });
   }
 
+  // Wrap jfce_->fd in an asio stream_descriptor for async event waiting.
+  bool init_event_fd() {
+    if (!event_mode_enabled_ || !jfce_ || jfce_->fd < 0) return false;
+    int flags = fcntl(jfce_->fd, F_GETFL);
+    if (flags < 0) {
+      ELOG_WARN << "fcntl(F_GETFL) on jfce fd=" << jfce_->fd
+                << " failed: errno=" << errno << ", fall back to busy polling";
+      event_mode_enabled_ = false;
+      return false;
+    }
+    if (fcntl(jfce_->fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+      ELOG_WARN << "fcntl(F_SETFL, O_NONBLOCK) on jfce fd=" << jfce_->fd
+                << " failed: errno=" << errno << ", fall back to busy polling";
+      event_mode_enabled_ = false;
+      return false;
+    }
+    try {
+      event_fd_ = std::make_unique<asio::posix::stream_descriptor>(
+          executor_->get_asio_executor(), jfce_->fd);
+    } catch (const std::exception& e) {
+      ELOG_WARN << "create stream_descriptor for jfce fd=" << jfce_->fd
+                << " failed: " << e.what() << ", fall back to busy polling";
+      event_mode_enabled_ = false;
+      return false;
+    }
+    return true;
+  }
+
+  // Event-driven completion loop: rearm -> wait -> ack -> poll drain -> rearm.
+  async_simple::coro::Lazy<void> event_loop() {
+    auto self = shared_from_this();
+    std::error_code ec;
+    int consecutive_rearm_failures = 0;
+    while (!has_close_) {
+      if (urma_rearm_jfc(jfc_.get(), false) != URMA_SUCCESS) {
+        auto [drain_ec, drained] = poll_completion();
+        if (drain_ec) {
+          fail_pending(drain_ec);
+          close();
+          break;
+        }
+        if (urma_rearm_jfc(jfc_.get(), false) != URMA_SUCCESS) {
+          if (++consecutive_rearm_failures > 16) {
+            ELOG_WARN << "URMA rearm_jfc keeps failing after drain; yielding";
+            consecutive_rearm_failures = 0;
+            co_await coro_io::post([] {}, executor_);
+          }
+          continue;
+        }
+        consecutive_rearm_failures = 0;
+      }
+      coro_io::callback_awaitor<std::error_code> awaitor;
+      ec = co_await awaitor.await_resume([&self](auto handler) {
+        self->event_fd_->async_wait(
+            asio::posix::stream_descriptor::wait_read,
+            [handler](const std::error_code& wait_ec) mutable {
+              handler.set_value_then_resume(wait_ec);
+            });
+      });
+      if (has_close_) break;
+      if (ec) {
+        ELOG_INFO << "URMA event fd wait ended with error: " << ec.message();
+        break;
+      }
+      urma_jfc_t* ev_jfc = nullptr;
+      int ev_cnt = urma_wait_jfc(jfce_.get(), 1, 0, &ev_jfc);
+      if (ev_cnt > 0 && ev_jfc) {
+        uint32_t ack_cnt = 1;
+        urma_ack_jfc(&ev_jfc, &ack_cnt, 1);
+      }
+      auto [poll_ec, n] = poll_completion();
+      if (poll_ec) {
+        fail_pending(poll_ec);
+        close();
+        break;
+      }
+      for (std::size_t i = 0; i < busy_poll_budget_ && n > 0 && !has_close_;
+           ++i) {
+        auto [e, c] = poll_completion();
+        if (e) {
+          fail_pending(e);
+          close();
+          break;
+        }
+        n = c;
+      }
+    }
+  }
+
+  // Start the completion watcher; event-driven loop or legacy busy poll.
+  void start_completion_watch() {
+    if (event_mode_enabled_ && init_event_fd()) {
+      ELOG_INFO << "URMA starting event-driven completion loop (jfce fd="
+                << jfce_->fd << ")";
+      auto self = shared_from_this();
+      event_loop().start([self](auto&&) {
+        ELOG_INFO << "URMA event_loop exited";
+      });
+    } else {
+      ELOG_INFO << "URMA starting timer-based busy poller (fallback)";
+      poll_once();
+      start_polling();
+    }
+  }
+
   async_simple::coro::Lazy<std::error_code> wait_for_send_slot(
       std::size_t limit) {
     if (send_callbacks_.size() < limit) co_return std::error_code{};
@@ -421,6 +553,7 @@ struct urma_socket_shared_state_t
     if (has_close_.exchange(true)) return;
     std::error_code ignored;
     poll_timer_.cancel(ignored);
+    if (event_fd_) event_fd_->cancel(ignored);
     socket_.cancel(ignored);
     socket_.close(ignored);
     fail_pending(std::make_error_code(std::errc::operation_canceled));
@@ -433,9 +566,12 @@ struct urma_socket_shared_state_t
       auto buffer = recv_queue_.pop();
       device_->get_buffer_pool()->return_buffer(buffer);
     }
+    // Release stream_descriptor before closing the jfce fd it wraps.
+    event_fd_.reset();
     remote_seg_.reset();
     remote_jetty_.reset();
     jetty_.reset();
+    jfce_.reset();
     jfr_.reset();
     jfc_.reset();
   }
@@ -447,6 +583,8 @@ struct urma_socket_shared_state_t
   std::unique_ptr<urma_jfc_t, urma_deleter> jfc_;
   std::unique_ptr<urma_jfr_t, urma_deleter> jfr_;
   std::unique_ptr<urma_jetty_t, urma_deleter> jetty_;
+  std::unique_ptr<urma_jfce_t, urma_deleter> jfce_;
+  std::unique_ptr<asio::posix::stream_descriptor> event_fd_;
   std::unique_ptr<urma_target_jetty_t, urma_deleter> remote_jetty_;
   std::unique_ptr<urma_target_seg_t, urma_deleter> remote_seg_;
   std::size_t recv_buffer_cnt_;
@@ -458,6 +596,8 @@ struct urma_socket_shared_state_t
   std::optional<async_simple::Promise<std::error_code>> write_promise_;
   std::atomic<bool> has_close_{false};
   bool peer_close_ = false;
+  bool event_mode_enabled_ = false;
+  std::size_t busy_poll_budget_ = 8;
   static constexpr std::chrono::microseconds idle_poll_interval_{5};
   static constexpr std::size_t max_active_poll_budget_ = 64;
   std::size_t active_poll_budget_ = max_active_poll_budget_;
@@ -478,6 +618,8 @@ class urma_socket_t {
     std::string device_name;
     int eid_index = 0;
     urma_tp_type_t tp_type = URMA_CTP;
+    bool event_mode = true;
+    std::size_t busy_poll_budget = 8;
   };
 
   enum io_type { recv = 0, send = 1 };
@@ -583,7 +725,7 @@ class urma_socket_t {
     if (write_ec) co_return write_ec;
     record_handshake_endpoints();
     close_handshake_socket();
-    state_->start_polling();
+    state_->start_completion_watch();
     co_return std::error_code{};
   }
 
@@ -750,7 +892,8 @@ class urma_socket_t {
     state_ = std::make_shared<detail::urma_socket_shared_state_t>(
         std::move(device), executor_, conf_.recv_buffer_cnt,
         conf_.send_buffer_cnt, conf_.cq_size);
-    if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt)) {
+    state_->busy_poll_budget_ = conf_.busy_poll_budget;
+    if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt, conf_.event_mode)) {
       auto stage = state_->init_stage_;
       auto error = state_->init_error_;
       ELOG_ERROR << "URMA socket resource initialization failed: stage="
@@ -867,7 +1010,7 @@ class urma_socket_t {
     if (ec) co_return ec;
     record_handshake_endpoints();
     close_handshake_socket();
-    state_->start_polling();
+    state_->start_completion_watch();
     co_return std::error_code{};
   }
 
