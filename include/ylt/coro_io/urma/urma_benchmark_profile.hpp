@@ -185,6 +185,7 @@ inline void reserve_per_stage(std::size_t count) {
 inline void print(std::ostream& os) {
   std::array<std::vector<uint64_t>, static_cast<std::size_t>(stage::count)>
       merged;
+  std::array<uint32_t, static_cast<std::size_t>(stage::count)> total_counters{};
   {
     std::lock_guard<std::mutex> lock(registry_mutex());
     for (auto* thread : registry()) {
@@ -192,6 +193,7 @@ inline void print(std::ostream& os) {
       for (std::size_t i = 0; i < merged.size(); ++i) {
         auto& src = thread->samples[i];
         merged[i].insert(merged[i].end(), src.begin(), src.end());
+        total_counters[i] += thread->counters[i];
       }
     }
   }
@@ -202,23 +204,31 @@ inline void print(std::ostream& os) {
   os << std::fixed << std::setprecision(2);
   for (std::size_t i = 0; i < merged.size(); ++i) {
     auto& samples = merged[i];
-    if (samples.empty()) continue;
+    auto total_calls = total_counters[i];
+    if (samples.empty() && total_calls == 0) continue;
     std::sort(samples.begin(), samples.end());
     auto percentile = [&](double p) {
+      if (samples.empty()) return 0.0;
       auto index = static_cast<std::size_t>((samples.size() - 1) * p);
       return static_cast<double>(samples[index]) / 1000.0;
     };
     auto sum = std::accumulate(
         samples.begin(), samples.end(), static_cast<long double>(0),
         [](long double lhs, uint64_t rhs) { return lhs + rhs; });
-    auto avg = static_cast<double>(sum / samples.size()) / 1000.0;
+    auto avg = samples.empty()
+                   ? 0.0
+                   : static_cast<double>(sum / samples.size()) / 1000.0;
     os << "rpc_profile_stage name=" << stage_names[i]
-       << " count=" << samples.size() << " avg=" << avg
+       << " calls=" << total_calls
+       << " sampled=" << samples.size()
+       << " avg=" << avg
        << " p50=" << percentile(0.50)
        << " p90=" << percentile(0.90)
        << " p99=" << percentile(0.99)
        << " p999=" << percentile(0.999)
-       << " max=" << static_cast<double>(samples.back()) / 1000.0 << "\n";
+       << " max=" << (samples.empty() ? 0.0
+                      : static_cast<double>(samples.back()) / 1000.0)
+       << "\n";
   }
 }
 
