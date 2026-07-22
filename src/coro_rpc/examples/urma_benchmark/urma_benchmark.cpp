@@ -86,6 +86,7 @@ struct options_t {
   uint32_t buffer_size = 4 * 1024;
   uint64_t max_memory_usage = 256ull * 1024 * 1024;
   bool profile = false;
+  bool use_urma = true;
   uint32_t profile_sample_rate = 1;
   easylog::Severity log_level = easylog::Severity::WARNING;
 };
@@ -132,6 +133,7 @@ void print_usage(const char* program) {
       << "  --buffer-size <bytes>    URMA SEND chunk size. Default 4096 for CTP\n"
       << "  --queue-depth <n>        URMA send/recv queue depth. Default 64\n"
       << "  --max-memory-mib <n>     URMA buffer pool memory per process. Default 256, auto-raised when needed\n"
+      << "  --no-urma               Use TCP instead of URMA RPC. Default URMA\n"
       << "  --profile                Enable in-memory stage latency profiling. Default off\n"
       << "  --profile-sample-rate <n> Record one sample every n events per stage/thread. Default 1\n"
       << "  --log <trace|debug|info|warn|error> Default info\n\n"
@@ -230,6 +232,9 @@ options_t parse_options(int argc, char** argv) {
     }
     else if (key == "--profile") {
       opt.profile = true;
+    }
+    else if (key == "--no-urma") {
+      opt.use_urma = false;
     }
     else if (key == "--profile-sample-rate") {
       opt.profile_sample_rate =
@@ -751,14 +756,19 @@ int run_server(const options_t& opt) {
             << ", queue_depth=" << opt.queue_depth
             << ", max_memory_mib="
             << effective_pool_memory_usage(opt) / 1024 / 1024 << std::endl;
-  configure_urma_rpc_env(opt);
-  if (!init_global_urma(opt)) return 1;
-  status("constructing RPC server with URMA RPC auto configuration");
+  if (opt.use_urma) {
+    configure_urma_rpc_env(opt);
+    if (!init_global_urma(opt)) return 1;
+    status("constructing RPC server with URMA RPC auto configuration");
+  } else {
+    status("constructing RPC server with TCP (URMA disabled)");
+  }
   coro_rpc_server server(opt.server_threads, opt.port, opt.host);
   server.register_handler<bench_echo>();
   server.register_handler<bench_sink>();
   server.register_handler<bench_attachment_sink>();
-  std::cout << "URMA RPC benchmark server listening on " << opt.host << ":"
+  std::cout << (opt.use_urma ? "URMA" : "TCP")
+            << " RPC benchmark server listening on " << opt.host << ":"
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index
             << ", buffer_size=" << opt.buffer_size
@@ -784,6 +794,7 @@ int run_client(const options_t& opt) {
             << ", total_outstanding="
             << static_cast<uint64_t>(opt.connections) * opt.pipeline_depth
             << ", concurrency=" << opt.concurrency
+            << ", use_urma=" << (opt.use_urma ? "on" : "off")
             << ", profile=" << (opt.profile ? "on" : "off")
             << ", profile_sample_rate=" << opt.profile_sample_rate
             << std::endl;
@@ -794,9 +805,12 @@ int run_client(const options_t& opt) {
     if (opt.profile) coro_io::urma_benchmark_profile::print(std::cout);
     return 0;
   }
-  configure_urma_rpc_env(opt);
-  if (!init_global_urma(opt)) return 1;
-  std::cout << "URMA RPC benchmark client target " << opt.host << ":"
+  if (opt.use_urma) {
+    configure_urma_rpc_env(opt);
+    if (!init_global_urma(opt)) return 1;
+  }
+  std::cout << (opt.use_urma ? "URMA" : "TCP")
+            << " RPC benchmark client target " << opt.host << ":"
             << opt.port << ", mode=" << opt.mode
             << ", rpc=" << opt.rpc
             << ", payload=" << opt.payload_size
