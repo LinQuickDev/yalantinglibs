@@ -144,10 +144,27 @@ struct thread_samples {
   std::array<std::vector<uint64_t>, static_cast<std::size_t>(stage::count)>
       samples;
   std::array<uint32_t, static_cast<std::size_t>(stage::count)> counters{};
+  ~thread_samples();
 };
 
 inline std::mutex& registry_mutex() {
   static std::mutex value;
+  return value;
+}
+
+// Samples merged from threads that have already exited (thread_local
+// thread_samples are destroyed on thread exit, so we move their data here).
+inline std::array<std::vector<uint64_t>,
+                  static_cast<std::size_t>(stage::count)>&
+merged_samples() {
+  static std::array<std::vector<uint64_t>, static_cast<std::size_t>(stage::count)>
+      value;
+  return value;
+}
+
+inline std::array<uint32_t, static_cast<std::size_t>(stage::count)>&
+merged_counters() {
+  static std::array<uint32_t, static_cast<std::size_t>(stage::count)> value{};
   return value;
 }
 
@@ -165,6 +182,22 @@ inline thread_samples& local_samples() {
   }();
   (void)registered;
   return value;
+}
+
+inline thread_samples::~thread_samples() {
+  // Thread is exiting; move our data into the global merged store so print()
+  // can still see it after this thread_local is destroyed.
+  std::lock_guard<std::mutex> lock(registry_mutex());
+  auto& dst = merged_samples();
+  auto& dst_cnt = merged_counters();
+  for (std::size_t i = 0; i < samples.size(); ++i) {
+    dst[i].insert(dst[i].end(), samples[i].begin(), samples[i].end());
+    dst_cnt[i] += counters[i];
+    samples[i].clear();
+  }
+  // Remove self from registry to avoid dangling pointer.
+  auto& reg = registry();
+  reg.erase(std::remove(reg.begin(), reg.end(), this), reg.end());
 }
 
 inline void record(stage stage_id, uint64_t duration_ns) {
@@ -195,11 +228,19 @@ inline void print(std::ostream& os) {
   std::array<uint32_t, static_cast<std::size_t>(stage::count)> total_counters{};
   {
     std::lock_guard<std::mutex> lock(registry_mutex());
+    // Merge data from threads that already exited (moved into merged_samples
+    // by ~thread_samples).
+    for (std::size_t i = 0; i < merged.size(); ++i) {
+      merged[i].insert(merged[i].end(), merged_samples()[i].begin(),
+                       merged_samples()[i].end());
+      total_counters[i] += merged_counters()[i];
+    }
+    // Merge data from still-live threads (thread_local not yet destroyed).
     for (auto* thread : registry()) {
       if (thread == nullptr) continue;
       for (std::size_t i = 0; i < merged.size(); ++i) {
-        auto& src = thread->samples[i];
-        merged[i].insert(merged[i].end(), src.begin(), src.end());
+        merged[i].insert(merged[i].end(), thread->samples[i].begin(),
+                         thread->samples[i].end());
         total_counters[i] += thread->counters[i];
       }
     }
