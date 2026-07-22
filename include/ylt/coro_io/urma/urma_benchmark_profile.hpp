@@ -20,8 +20,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -30,6 +30,30 @@
 #include <vector>
 
 namespace coro_io::urma_benchmark_profile {
+
+// Payload size buckets in bytes.
+//   0: [0, 100)
+//   1: [100, 500)
+//   2: [500, 1K)
+//   3..N: [1K, 2K), [2K, 3K), ... each 1K wide
+inline constexpr std::size_t bucket_count = 16;
+inline constexpr std::array<uint32_t, bucket_count> bucket_upper = {
+    100,   500,   1000,  2000,  3000,  4000,  5000,  6000,
+    7000,  8000,  9000,  10000, 12000, 16000, 32000, UINT32_MAX,
+};
+inline constexpr std::array<std::string_view, bucket_count> bucket_names = {
+    "0-100",     "100-500",   "500-1K",    "1K-2K",     "2K-3K",
+    "3K-4K",     "4K-5K",     "5K-6K",     "6K-7K",     "7K-8K",
+    "8K-9K",     "9K-10K",    "10K-12K",   "12K-16K",   "16K-32K",
+    "32K+",
+};
+
+inline std::size_t size_to_bucket(std::size_t payload_size) {
+  for (std::size_t i = 0; i < bucket_count; ++i) {
+    if (payload_size < bucket_upper[i]) return i;
+  }
+  return bucket_count - 1;
+}
 
 enum class stage : uint8_t {
   benchmark_rpc_call = 0,
@@ -114,11 +138,8 @@ inline void init_from_env() {
         r = r * 10 + (*p - '0');
       if (r > 0) sample_rate_value().store(r, std::memory_order_relaxed);
     }
-    // Auto-print on process exit so hosts (e.g. Mooncake master) that don't
-    // call print() explicitly still emit the profile.
     if (enabled_flag().load(std::memory_order_relaxed)) {
       std::atexit([]() {
-        // Use raw fprintf so this shows even if std::cout is already torn down.
         std::fprintf(stderr, "[rpc_profile] atexit: printing profile\n");
         print(std::cerr);
       });
@@ -145,8 +166,10 @@ inline uint64_t now_ns() noexcept {
           .count());
 }
 
+// Per-thread, per-stage, per-bucket samples.
 struct thread_samples {
-  std::array<std::vector<uint64_t>, static_cast<std::size_t>(stage::count)>
+  std::array<std::array<std::vector<uint64_t>, bucket_count>,
+             static_cast<std::size_t>(stage::count)>
       samples;
   std::array<uint32_t, static_cast<std::size_t>(stage::count)> counters{};
   ~thread_samples();
@@ -157,12 +180,11 @@ inline std::mutex& registry_mutex() {
   return value;
 }
 
-// Samples merged from threads that have already exited (thread_local
-// thread_samples are destroyed on thread exit, so we move their data here).
-inline std::array<std::vector<uint64_t>,
+inline std::array<std::array<std::vector<uint64_t>, bucket_count>,
                   static_cast<std::size_t>(stage::count)>&
 merged_samples() {
-  static std::array<std::vector<uint64_t>, static_cast<std::size_t>(stage::count)>
+  static std::array<std::array<std::vector<uint64_t>, bucket_count>,
+                    static_cast<std::size_t>(stage::count)>
       value;
   return value;
 }
@@ -190,29 +212,35 @@ inline thread_samples& local_samples() {
 }
 
 inline thread_samples::~thread_samples() {
-  // Thread is exiting; move our data into the global merged store so print()
-  // can still see it after this thread_local is destroyed.
   std::lock_guard<std::mutex> lock(registry_mutex());
   auto& dst = merged_samples();
   auto& dst_cnt = merged_counters();
-  for (std::size_t i = 0; i < samples.size(); ++i) {
-    dst[i].insert(dst[i].end(), samples[i].begin(), samples[i].end());
-    dst_cnt[i] += counters[i];
-    samples[i].clear();
+  for (std::size_t s = 0; s < samples.size(); ++s) {
+    dst_cnt[s] += counters[s];
+    for (std::size_t b = 0; b < bucket_count; ++b) {
+      dst[s][b].insert(dst[s][b].end(), samples[s][b].begin(),
+                       samples[s][b].end());
+      samples[s][b].clear();
+    }
   }
-  // Remove self from registry to avoid dangling pointer.
   auto& reg = registry();
   reg.erase(std::remove(reg.begin(), reg.end(), this), reg.end());
 }
 
-inline void record(stage stage_id, uint64_t duration_ns) {
+inline void record_with_size(stage stage_id, uint64_t duration_ns,
+                             std::size_t payload_size) {
   if (!enabled()) return;
   auto& local = local_samples();
-  auto index = static_cast<std::size_t>(stage_id);
+  auto s = static_cast<std::size_t>(stage_id);
+  auto b = size_to_bucket(payload_size);
   auto rate = sample_rate_value().load(std::memory_order_relaxed);
-  auto counter = ++local.counters[index];
+  auto counter = ++local.counters[s];
   if ((counter % rate) != 0) return;
-  local.samples[index].push_back(duration_ns);
+  local.samples[s][b].push_back(duration_ns);
+}
+
+inline void record(stage stage_id, uint64_t duration_ns) {
+  record_with_size(stage_id, duration_ns, 0);
 }
 
 inline void record_since(stage stage_id, uint64_t begin_ns) {
@@ -221,32 +249,44 @@ inline void record_since(stage stage_id, uint64_t begin_ns) {
   if (end_ns >= begin_ns) record(stage_id, end_ns - begin_ns);
 }
 
+inline void record_since_with_size(stage stage_id, uint64_t begin_ns,
+                                  std::size_t payload_size) {
+  if (!enabled()) return;
+  auto end_ns = now_ns();
+  if (end_ns >= begin_ns)
+    record_with_size(stage_id, end_ns - begin_ns, payload_size);
+}
+
 inline void reserve_per_stage(std::size_t count) {
   if (!enabled()) return;
   auto& local = local_samples();
-  for (auto& item : local.samples) item.reserve(count);
+  for (auto& stage_buckets : local.samples)
+    for (auto& bucket : stage_buckets) bucket.reserve(count);
 }
 
 inline void print(std::ostream& os) {
-  std::array<std::vector<uint64_t>, static_cast<std::size_t>(stage::count)>
+  // merged[stage][bucket] -> samples
+  std::array<std::array<std::vector<uint64_t>, bucket_count>,
+             static_cast<std::size_t>(stage::count)>
       merged;
   std::array<uint32_t, static_cast<std::size_t>(stage::count)> total_counters{};
   {
     std::lock_guard<std::mutex> lock(registry_mutex());
-    // Merge data from threads that already exited (moved into merged_samples
-    // by ~thread_samples).
-    for (std::size_t i = 0; i < merged.size(); ++i) {
-      merged[i].insert(merged[i].end(), merged_samples()[i].begin(),
-                       merged_samples()[i].end());
-      total_counters[i] += merged_counters()[i];
+    for (std::size_t s = 0; s < merged.size(); ++s) {
+      total_counters[s] += merged_counters()[s];
+      for (std::size_t b = 0; b < bucket_count; ++b) {
+        auto& src = merged_samples()[s][b];
+        merged[s][b].insert(merged[s][b].end(), src.begin(), src.end());
+      }
     }
-    // Merge data from still-live threads (thread_local not yet destroyed).
     for (auto* thread : registry()) {
       if (thread == nullptr) continue;
-      for (std::size_t i = 0; i < merged.size(); ++i) {
-        merged[i].insert(merged[i].end(), thread->samples[i].begin(),
-                         thread->samples[i].end());
-        total_counters[i] += thread->counters[i];
+      for (std::size_t s = 0; s < merged.size(); ++s) {
+        total_counters[s] += thread->counters[s];
+        for (std::size_t b = 0; b < bucket_count; ++b) {
+          auto& src = thread->samples[s][b];
+          merged[s][b].insert(merged[s][b].end(), src.begin(), src.end());
+        }
       }
     }
   }
@@ -255,33 +295,37 @@ inline void print(std::ostream& os) {
      << sample_rate_value().load(std::memory_order_relaxed)
      << " unit=us\n";
   os << std::fixed << std::setprecision(2);
-  for (std::size_t i = 0; i < merged.size(); ++i) {
-    auto& samples = merged[i];
-    auto total_calls = total_counters[i];
-    if (samples.empty() && total_calls == 0) continue;
-    std::sort(samples.begin(), samples.end());
-    auto percentile = [&](double p) {
-      if (samples.empty()) return 0.0;
-      auto index = static_cast<std::size_t>((samples.size() - 1) * p);
-      return static_cast<double>(samples[index]) / 1000.0;
-    };
-    auto sum = std::accumulate(
-        samples.begin(), samples.end(), static_cast<long double>(0),
-        [](long double lhs, uint64_t rhs) { return lhs + rhs; });
-    auto avg = samples.empty()
-                   ? 0.0
-                   : static_cast<double>(sum / samples.size()) / 1000.0;
-    os << "rpc_profile_stage name=" << stage_names[i]
-       << " calls=" << total_calls
-       << " sampled=" << samples.size()
-       << " avg=" << avg
-       << " p50=" << percentile(0.50)
-       << " p90=" << percentile(0.90)
-       << " p99=" << percentile(0.99)
-       << " p999=" << percentile(0.999)
-       << " max=" << (samples.empty() ? 0.0
-                      : static_cast<double>(samples.back()) / 1000.0)
-       << "\n";
+  for (std::size_t s = 0; s < merged.size(); ++s) {
+    auto total_calls = total_counters[s];
+    if (total_calls == 0) continue;
+    for (std::size_t b = 0; b < bucket_count; ++b) {
+      auto& samples = merged[s][b];
+      if (samples.empty()) continue;
+      std::sort(samples.begin(), samples.end());
+      auto percentile = [&](double p) {
+        if (samples.empty()) return 0.0;
+        auto idx = static_cast<std::size_t>((samples.size() - 1) * p);
+        return static_cast<double>(samples[idx]) / 1000.0;
+      };
+      auto sum = std::accumulate(
+          samples.begin(), samples.end(), static_cast<long double>(0),
+          [](long double lhs, uint64_t rhs) { return lhs + rhs; });
+      auto avg = samples.empty()
+                     ? 0.0
+                     : static_cast<double>(sum / samples.size()) / 1000.0;
+      os << "rpc_profile_stage name=" << stage_names[s]
+         << " bucket=" << bucket_names[b]
+         << " calls=" << total_calls
+         << " sampled=" << samples.size()
+         << " avg=" << avg
+         << " p50=" << percentile(0.50)
+         << " p90=" << percentile(0.90)
+         << " p99=" << percentile(0.99)
+         << " p999=" << percentile(0.999)
+         << " max=" << (samples.empty() ? 0.0
+                        : static_cast<double>(samples.back()) / 1000.0)
+         << "\n";
+    }
   }
 }
 

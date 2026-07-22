@@ -329,9 +329,10 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       ec = co_await rpc_protocol::read_payload(socket, req_head, body,
                                                req_attachment,
                                                context_info.get());
-      coro_io::urma_benchmark_profile::record_since(
+      auto req_payload_size = body.size() + req_attachment.size();
+      coro_io::urma_benchmark_profile::record_since_with_size(
           coro_io::urma_benchmark_profile::stage::server_read_payload,
-          profile_begin);
+          profile_begin, req_payload_size);
       cancel_timer(req_id, "recv client data");
       payload = std::string_view{body};
 
@@ -395,9 +396,9 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
                   });
                 },
                 socket_wrapper_.get_executor());
-        coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::record_since_with_size(
             coro_io::urma_benchmark_profile::stage::server_dispatch,
-            dispatch_begin);
+            dispatch_begin, req_payload_size);
       }
       else {
         coro_rpc::detail::set_context<rpc_protocol>() = context_info.get();
@@ -407,9 +408,9 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
         auto &&[resp_err, resp_buf] =
             router.route(conn_id_, req_id, handler, payload, context_info,
                          serialize_proto.value(), key);
-        coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::record_since_with_size(
             coro_io::urma_benchmark_profile::stage::server_dispatch,
-            dispatch_begin);
+            dispatch_begin, req_payload_size);
         if (is_rpc_return_by_callback_) {
           if (!resp_err) {
             continue;
@@ -481,9 +482,10 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
                           : 0;
     std::string header_buf = rpc_protocol::prepare_response(
         resp_buf, req_head, attachment().length(), resp_err, resp_error_msg);
-    coro_io::urma_benchmark_profile::record_since(
+    auto resp_payload_size = resp_buf.size() + attachment().length();
+    coro_io::urma_benchmark_profile::record_since_with_size(
         coro_io::urma_benchmark_profile::stage::server_serialize_response,
-        ser_begin);
+        ser_begin, resp_payload_size);
 
     response(start_tp, req_id, std::move(header_buf), std::move(resp_buf),
              std::move(attachment), std::move(complete_handler), nullptr)
@@ -655,6 +657,8 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       auto send_begin = coro_io::urma_benchmark_profile::enabled()
                             ? coro_io::urma_benchmark_profile::now_ns()
                             : 0;
+      auto send_payload_size = std::get<0>(msg).size() +
+                                std::get<1>(msg).size() + attachment.size();
       if (attachment.empty()) {
         std::array<asio::const_buffer, 2> buffers{
             asio::buffer(std::get<0>(msg)), asio::buffer(std::get<1>(msg))};
@@ -675,9 +679,9 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
           ret = co_await coro_io::async_write(socket, buffers);
         }
       }
-      coro_io::urma_benchmark_profile::record_since(
+      coro_io::urma_benchmark_profile::record_since_with_size(
           coro_io::urma_benchmark_profile::stage::server_send_response,
-          send_begin);
+          send_begin, send_payload_size);
       auto &complete_handler = std::get<3>(msg);
       if (complete_handler) {
         complete_handler(ret.first, ret.second);
