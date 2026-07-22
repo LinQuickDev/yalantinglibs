@@ -95,6 +95,8 @@ inline std::atomic<uint32_t>& sample_rate_value() {
   return value;
 }
 
+inline void print(std::ostream& os);
+
 inline void init_from_env() {
   static std::once_flag flag;
   std::call_once(flag, [] {
@@ -110,6 +112,11 @@ inline void init_from_env() {
       for (const char* p = rate; *p >= '0' && *p <= '9'; ++p)
         r = r * 10 + (*p - '0');
       if (r > 0) sample_rate_value().store(r, std::memory_order_relaxed);
+    }
+    // Auto-print on process exit so hosts (e.g. Mooncake master) that don't
+    // call print() explicitly still emit the profile.
+    if (enabled_flag().load(std::memory_order_relaxed)) {
+      std::atexit([]() { print(std::cout); });
     }
   });
 }
