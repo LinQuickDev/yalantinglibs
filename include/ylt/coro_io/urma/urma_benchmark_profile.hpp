@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -116,7 +117,11 @@ inline void init_from_env() {
     // Auto-print on process exit so hosts (e.g. Mooncake master) that don't
     // call print() explicitly still emit the profile.
     if (enabled_flag().load(std::memory_order_relaxed)) {
-      std::atexit([]() { print(std::cout); });
+      std::atexit([]() {
+        // Use raw fprintf so this shows even if std::cout is already torn down.
+        std::fprintf(stderr, "[rpc_profile] atexit: printing profile\n");
+        print(std::cerr);
+      });
     }
   });
 }
