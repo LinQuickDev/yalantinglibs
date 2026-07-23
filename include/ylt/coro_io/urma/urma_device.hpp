@@ -25,6 +25,11 @@
 #include "ylt/easylog.hpp"
 #include "ylt/coro_io/urma/urma_buffer.hpp"
 
+// urma_ubagg.h is included unconditionally (matching urma_socket.hpp) so the
+// bond_mode/bond_level enum constants used in urma_init_config_t defaults and
+// the device member defaults are visible even in non-URMA builds.
+#include "ylt/urma/urma_ubagg.h"
+
 #ifdef YLT_ENABLE_URMA
 #include "ylt/urma/urma_api.h"
 #endif
@@ -69,6 +74,14 @@ class urma_device_wrapper_t {
   bool is_valid() const { return context_ != nullptr && device_ptr_ != nullptr; }
   std::shared_ptr<urma_buffer_pool_t> get_buffer_pool() const { return buffer_pool_; }
 
+  // Set bonding mode/level before init(). Takes effect only for bonding devices
+  // (dev name starting with "bonding"). Must be called before init() so that the
+  // urma_user_ctl(SET_BONDING_MODE) ioctl runs while context refcount==1.
+  void set_bonding_config(uint32_t mode, uint32_t level) {
+    bond_mode_ = mode;
+    bond_level_ = level;
+  }
+
  private:
   std::string name_;
   int eid_index_ = -1;
@@ -77,6 +90,8 @@ class urma_device_wrapper_t {
   urma_eid_t eid_{};
   urma_device_attr_t device_attr_{};
   std::shared_ptr<urma_buffer_pool_t> buffer_pool_;
+  uint32_t bond_mode_ = BONDP_BONDING_MODE_STANDALONE;
+  uint32_t bond_level_ = BONDP_BONDING_LEVEL_IODIE;
 };
 
 // Backward compatibility alias
@@ -88,6 +103,7 @@ class urma_device_manager {
   static urma_device_manager& instance();
   bool init();
   std::shared_ptr<urma_device_wrapper_t> get_device(const std::string& device_name = "", int eid_index = 0);
+  std::shared_ptr<urma_device_wrapper_t> get_device(const urma_init_config_t& config);
   std::vector<std::shared_ptr<urma_device_wrapper_t>> get_all_devices();
   std::shared_ptr<urma_device_wrapper_t> get_global_device();
 
@@ -111,6 +127,12 @@ struct urma_init_config_t {
   std::string dev_name;                        // device name, empty for auto-select
   urma_buffer_pool_config_t buffer_pool_config;  // buffer pool config
   int eid_index = 0;                           // EID index to use
+  // Bonding device mode/level. Defaults match urma_perftest (STANDALONE + IODIE),
+  // which enables a single primary-EID device and avoids CTP cross-port spray
+  // causing first-SEND RNR (status=10) under the default STANDALONE+PORT level.
+  // Only applied when dev_name starts with "bonding".
+  uint32_t bond_mode = BONDP_BONDING_MODE_STANDALONE;
+  uint32_t bond_level = BONDP_BONDING_LEVEL_IODIE;
 };
 
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device() {
@@ -120,10 +142,13 @@ inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device() {
 
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
     const urma_init_config_t& config) {
-  ELOG_DEBUG << "get_global_urma_device(dev_name=" << config.dev_name << ", eid_index=" << config.eid_index << ") called";
-  auto device =
-      urma_device_manager::instance().get_device(config.dev_name,
-                                                 config.eid_index);
+  ELOG_DEBUG << "get_global_urma_device(dev_name=" << config.dev_name
+             << ", eid_index=" << config.eid_index
+             << ", bond_mode=" << config.bond_mode
+             << ", bond_level=" << config.bond_level << ") called";
+  // Use the config overload so bond_mode/bond_level are applied during init()
+  // (before any resource creation, while context refcount==1).
+  auto device = urma_device_manager::instance().get_device(config);
   if (device) {
     device->configure_buffer_pool(config.buffer_pool_config.buffer_size,
                                   config.buffer_pool_config.max_memory_usage);
@@ -225,6 +250,39 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
     return false;
   }
 
+  // Bonding devices default to STANDALONE+PORT level (bondp_provider_ops.c:514),
+  // which enables multiple port-EID devices. Under CTP the hardware sprays sends
+  // across the bonding group, but schedule_recv_standalone posts recv WRs to a
+  // single port, causing first-SEND RNR (status=10). Set STANDALONE+IODIE (single
+  // primary-EID device, matching urma_perftest) to avoid the spray/recv mismatch.
+  // Must run while context refcount==1 (before urma_register_seg in
+  // configure_buffer_pool), else bondp_set_bonding_mode returns URMA_EAGAIN.
+  if (name_.compare(0, 7, "bonding") == 0) {
+    bondp_set_bonding_mode_in_t bond_in = {
+      .bonding_mode = static_cast<bondp_bonding_mode_t>(bond_mode_),
+      .bonding_level = static_cast<bondp_bonding_level_t>(bond_level_),
+    };
+    urma_user_ctl_in_t ctl_in = {
+      .addr = reinterpret_cast<uint64_t>(&bond_in),
+      .len = static_cast<uint32_t>(sizeof(bond_in)),
+      .opcode = BONDP_USER_CTL_SET_BONDING_MODE,
+    };
+    urma_user_ctl_out_t ctl_out = {};
+    urma_status_t st = urma_user_ctl(context_, &ctl_in, &ctl_out);
+    if (st != URMA_SUCCESS) {
+      ELOG_ERROR << "urma_user_ctl(SET_BONDING_MODE) failed: status=" << st
+                 << ", dev=" << name_
+                 << " (requires context refcount==1, before any resource "
+                    "creation; check that no seg/jfc/jfr is created first)";
+      urma_delete_context(context_);
+      context_ = nullptr;
+      urma_free_device_list(devices);
+      return false;
+    }
+    ELOG_INFO << "bonding mode set: mode=" << bond_mode_
+              << ", level=" << bond_level_ << ", dev=" << name_;
+  }
+
   if (urma_query_device(device_ptr_, &device_attr_) != 0) {
     ELOG_ERROR << "urma_query_device failed";
     urma_delete_context(context_);
@@ -324,6 +382,35 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
 
   auto dev = std::make_shared<urma_device_wrapper_t>();
   if (!dev->init(device_name, eid_index)) return nullptr;
+
+  devices_.push_back(dev);
+  if (!global_device_) global_device_ = dev;
+  return dev;
+#else
+  return nullptr;
+#endif
+}
+
+inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
+    const urma_init_config_t& config) {
+#ifdef YLT_ENABLE_URMA
+  if (!initialized_ && !init()) return nullptr;
+
+  // Reuse an existing device matching dev_name + eid_index if one was already
+  // created. Note: the bond_mode/bond_level of the existing device are kept
+  // (they were applied at its init() time and cannot be changed post-hoc).
+  for (auto& dev : devices_) {
+    if ((config.dev_name.empty() || dev->name() == config.dev_name) &&
+        dev->eid_index() == config.eid_index) {
+      return dev;
+    }
+  }
+
+  auto dev = std::make_shared<urma_device_wrapper_t>();
+  // Bonding config must be set before init() so the SET_BONDING_MODE ioctl
+  // runs while the context refcount is still 1.
+  dev->set_bonding_config(config.bond_mode, config.bond_level);
+  if (!dev->init(config.dev_name, config.eid_index)) return nullptr;
 
   devices_.push_back(dev);
   if (!global_device_) global_device_ = dev;
