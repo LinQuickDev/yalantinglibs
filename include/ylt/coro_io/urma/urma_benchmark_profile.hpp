@@ -340,10 +340,11 @@ inline void print(std::ostream& os) {
   };
   (void)compute_b;  // bucket detail available if needed later
 
-  // Print a line with stats, at given indent level
-  auto line = [&](int indent, std::string_view label, const stats& st) {
-    for (int i = 0; i < indent; ++i) os << "  ";
-    os << std::left << std::setw(32 - indent * 2) << label
+  // Print a tree node: indent + branch char + label + stats
+  auto node = [&](int indent, bool last, std::string_view label, const stats& st) {
+    for (int i = 0; i < indent; ++i) os << (i < indent - 1 ? "│  " : "   ");
+    if (indent > 0) os << (last ? "└─ " : "├─ ");
+    os << std::left << std::setw(28) << label
        << " n=" << std::right << std::setw(8) << st.sampled
        << " avg=" << std::setw(10) << st.avg
        << " p50=" << std::setw(10) << st.p50
@@ -353,54 +354,58 @@ inline void print(std::ostream& os) {
        << " max=" << std::setw(10) << st.max
        << "\n";
   };
-  auto line_calls = [&](int indent, std::string_view label, uint32_t calls) {
-    for (int i = 0; i < indent; ++i) os << "  ";
-    os << std::left << std::setw(32 - indent * 2) << label
-       << " calls=" << calls << "\n";
+  // Print a parent node (with children)
+  auto parent = [&](int indent, bool last, std::string_view label, const stats& st) {
+    for (int i = 0; i < indent; ++i) os << (i < indent - 1 ? "│  " : "   ");
+    if (indent > 0) os << (last ? "└─ " : "├─ ");
+    os << std::left << std::setw(28) << label
+       << " n=" << std::right << std::setw(8) << st.sampled
+       << " avg=" << std::setw(10) << st.avg
+       << " p50=" << std::setw(10) << st.p50
+       << " p99=" << std::setw(10) << st.p99
+       << " max=" << std::setw(10) << st.max
+       << "\n";
   };
   auto has = [&](std::size_t s) { return total_counters[s] > 0; };
+  auto st = [&](stage s) { return compute(static_cast<std::size_t>(s)); };
 
   // ── Client ──
   os << "\n[client]\n";
-  // Send phase
   if (has(static_cast<std::size_t>(stage::client_send_request))) {
-    auto st = compute(static_cast<std::size_t>(stage::client_send_request));
-    line(0, "send_request", st);
+    parent(0, false, "send_request", st(stage::client_send_request));
     if (has(static_cast<std::size_t>(stage::client_prepare_request)))
-      line(1, "prepare_request", compute(static_cast<std::size_t>(stage::client_prepare_request)));
+      node(1, !has(static_cast<std::size_t>(stage::urma_write_total)),
+           "prepare_request", st(stage::client_prepare_request));
     if (has(static_cast<std::size_t>(stage::urma_write_total))) {
-      line(1, "urma.write_total", compute(static_cast<std::size_t>(stage::urma_write_total)));
-      if (has(static_cast<std::size_t>(stage::urma_write_copy)))
-        line(2, "write_copy", compute(static_cast<std::size_t>(stage::urma_write_copy)));
-      if (has(static_cast<std::size_t>(stage::urma_post_send)))
-        line(2, "post_send", compute(static_cast<std::size_t>(stage::urma_post_send)));
-      if (has(static_cast<std::size_t>(stage::urma_wait_send_completion)))
-        line(2, "wait_send_completion", compute(static_cast<std::size_t>(stage::urma_wait_send_completion)));
+      parent(1, true, "urma.write_total", st(stage::urma_write_total));
+      bool has_wc = has(static_cast<std::size_t>(stage::urma_write_copy));
+      bool has_ps = has(static_cast<std::size_t>(stage::urma_post_send));
+      bool has_wsc = has(static_cast<std::size_t>(stage::urma_wait_send_completion));
+      int cnt = has_wc + has_ps + has_wsc;
+      if (has_wc) node(2, --cnt == 0, "write_copy", st(stage::urma_write_copy));
+      if (has_ps) node(2, --cnt == 0, "post_send", st(stage::urma_post_send));
+      if (has_wsc) node(2, --cnt == 0, "wait_send_completion", st(stage::urma_wait_send_completion));
     }
   }
-  // Recv phase
   if (has(static_cast<std::size_t>(stage::client_recv_header))) {
-    auto st = compute(static_cast<std::size_t>(stage::client_recv_header));
-    line(0, "recv_header", st);
-    if (has(static_cast<std::size_t>(stage::urma_read_wait_completion)))
-      line(1, "urma.read_wait_completion", compute(static_cast<std::size_t>(stage::urma_read_wait_completion)));
-    if (has(static_cast<std::size_t>(stage::urma_read_copy)))
-      line(1, "urma.read_copy", compute(static_cast<std::size_t>(stage::urma_read_copy)));
+    parent(0, false, "recv_header", st(stage::client_recv_header));
+    bool has_rwc = has(static_cast<std::size_t>(stage::urma_read_wait_completion));
+    bool has_rc = has(static_cast<std::size_t>(stage::urma_read_copy));
+    int cnt = has_rwc + has_rc;
+    if (has_rwc) node(1, --cnt == 0, "urma.read_wait", st(stage::urma_read_wait_completion));
+    if (has_rc) node(1, --cnt == 0, "urma.read_copy", st(stage::urma_read_copy));
   }
-  if (has(static_cast<std::size_t>(stage::client_recv_payload))) {
-    auto st = compute(static_cast<std::size_t>(stage::client_recv_payload));
-    line(0, "recv_payload", st);
-  }
+  if (has(static_cast<std::size_t>(stage::client_recv_payload)))
+    parent(0, false, "recv_payload", st(stage::client_recv_payload));
   if (has(static_cast<std::size_t>(stage::client_deserialize_response)))
-    line(0, "deserialize_response", compute(static_cast<std::size_t>(stage::client_deserialize_response)));
-  // Connect
+    parent(0, false, "deserialize_response", st(stage::client_deserialize_response));
   if (has(static_cast<std::size_t>(stage::client_connect_total))) {
-    auto st = compute(static_cast<std::size_t>(stage::client_connect_total));
-    line(0, "connect_total", st);
-    if (has(static_cast<std::size_t>(stage::client_connect_tcp)))
-      line(1, "connect_tcp", compute(static_cast<std::size_t>(stage::client_connect_tcp)));
-    if (has(static_cast<std::size_t>(stage::client_connect_handshake)))
-      line(1, "connect_handshake", compute(static_cast<std::size_t>(stage::client_connect_handshake)));
+    parent(0, true, "connect_total", st(stage::client_connect_total));
+    bool has_tcp = has(static_cast<std::size_t>(stage::client_connect_tcp));
+    bool has_hs = has(static_cast<std::size_t>(stage::client_connect_handshake));
+    int cnt = has_tcp + has_hs;
+    if (has_tcp) node(1, --cnt == 0, "connect_tcp", st(stage::client_connect_tcp));
+    if (has_hs) node(1, --cnt == 0, "connect_handshake", st(stage::client_connect_handshake));
   }
 
   // ── Server ──
@@ -409,40 +414,39 @@ inline void print(std::ostream& os) {
   if (has_server) {
     os << "\n[server]\n";
     if (has(static_cast<std::size_t>(stage::server_read_header)))
-      line(0, "read_header", compute(static_cast<std::size_t>(stage::server_read_header)));
+      parent(0, false, "read_header", st(stage::server_read_header));
     if (has(static_cast<std::size_t>(stage::server_read_payload))) {
-      auto st = compute(static_cast<std::size_t>(stage::server_read_payload));
-      line(0, "read_payload", st);
-      if (has(static_cast<std::size_t>(stage::urma_read_wait_completion)))
-        line(1, "urma.read_wait_completion", compute(static_cast<std::size_t>(stage::urma_read_wait_completion)));
-      if (has(static_cast<std::size_t>(stage::urma_read_copy)))
-        line(1, "urma.read_copy", compute(static_cast<std::size_t>(stage::urma_read_copy)));
+      parent(0, false, "read_payload", st(stage::server_read_payload));
+      bool has_rwc = has(static_cast<std::size_t>(stage::urma_read_wait_completion));
+      bool has_rc = has(static_cast<std::size_t>(stage::urma_read_copy));
+      int cnt = has_rwc + has_rc;
+      if (has_rwc) node(1, --cnt == 0, "urma.read_wait", st(stage::urma_read_wait_completion));
+      if (has_rc) node(1, --cnt == 0, "urma.read_copy", st(stage::urma_read_copy));
     }
     if (has(static_cast<std::size_t>(stage::server_dispatch)))
-      line(0, "dispatch", compute(static_cast<std::size_t>(stage::server_dispatch)));
+      parent(0, false, "dispatch", st(stage::server_dispatch));
     if (has(static_cast<std::size_t>(stage::server_serialize_response)))
-      line(0, "serialize_response", compute(static_cast<std::size_t>(stage::server_serialize_response)));
+      parent(0, false, "serialize_response", st(stage::server_serialize_response));
     if (has(static_cast<std::size_t>(stage::server_response_queue)))
-      line(0, "response_queue", compute(static_cast<std::size_t>(stage::server_response_queue)));
+      parent(0, false, "response_queue", st(stage::server_response_queue));
     if (has(static_cast<std::size_t>(stage::server_send_response))) {
-      auto st = compute(static_cast<std::size_t>(stage::server_send_response));
-      line(0, "send_response", st);
+      parent(0, true, "send_response", st(stage::server_send_response));
       if (has(static_cast<std::size_t>(stage::urma_write_total))) {
-        line(1, "urma.write_total", compute(static_cast<std::size_t>(stage::urma_write_total)));
-        if (has(static_cast<std::size_t>(stage::urma_write_copy)))
-          line(2, "write_copy", compute(static_cast<std::size_t>(stage::urma_write_copy)));
-        if (has(static_cast<std::size_t>(stage::urma_post_send)))
-          line(2, "post_send", compute(static_cast<std::size_t>(stage::urma_post_send)));
-        if (has(static_cast<std::size_t>(stage::urma_wait_send_completion)))
-          line(2, "wait_send_completion", compute(static_cast<std::size_t>(stage::urma_wait_send_completion)));
+        parent(1, true, "urma.write_total", st(stage::urma_write_total));
+        bool has_wc = has(static_cast<std::size_t>(stage::urma_write_copy));
+        bool has_ps = has(static_cast<std::size_t>(stage::urma_post_send));
+        bool has_wsc = has(static_cast<std::size_t>(stage::urma_wait_send_completion));
+        int cnt = has_wc + has_ps + has_wsc;
+        if (has_wc) node(2, --cnt == 0, "write_copy", st(stage::urma_write_copy));
+        if (has_ps) node(2, --cnt == 0, "post_send", st(stage::urma_post_send));
+        if (has_wsc) node(2, --cnt == 0, "wait_send_completion", st(stage::urma_wait_send_completion));
       }
     }
   }
 
-  // ── URMA (standalone, only if not already shown under client/server) ──
   if (has(static_cast<std::size_t>(stage::urma_read_view))) {
     os << "\n[urma]\n";
-    line(0, "read_view", compute(static_cast<std::size_t>(stage::urma_read_view)));
+    parent(0, true, "read_view", st(stage::urma_read_view));
   }
 }
 
