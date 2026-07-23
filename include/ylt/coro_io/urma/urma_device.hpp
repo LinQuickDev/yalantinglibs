@@ -297,9 +297,12 @@ inline bool urma_device_manager::init() {
   urma_init_attr_t init_attr = {};
   auto status = urma_init(&init_attr);
   if (status != URMA_SUCCESS && status != URMA_EEXIST) {
-    ELOG_ERROR << "urma_init failed， status=%d" << status;
-    return false;
+    ELOG_WARN << "urma_init returned " << status
+              << ", attempting to continue (provider may already be loaded)";
   }
+  // Even if urma_init returns URMA_FAIL (no provider opened), the device list
+  // may already be populated by a prior caller (e.g. Mooncake TransferEngine)
+  // or by liburma's constructor.  Try to proceed rather than failing hard.
   initialized_ = true;
   return true;
 #else
