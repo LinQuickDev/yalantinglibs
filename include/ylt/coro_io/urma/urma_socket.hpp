@@ -502,10 +502,12 @@ struct urma_socket_shared_state_t
       // - If there are pending callbacks (send/recv waiting), skip spin and
       //   go straight to rearm+sleep so other event_loop coroutines (and
       //   the resumed callback coroutines) get CPU time.  This prevents
-      //   starvation under high load where many connections compete.
-      // - If no pending callbacks, spin-poll briefly to catch a burst.
+      //   a short spin (4 polls) to catch an imminent CQE, then sleep.
+      // - If no pending callbacks, spin up to busy_poll_budget_ to catch a
+      //   burst of idle traffic.
       bool has_pending = !send_callbacks_.empty() || recv_callback_;
       std::size_t idle_spins = 0;
+      std::size_t pending_budget = has_pending ? 4 : busy_poll_budget_;
       while (!has_close_) {
         auto [poll_ec, n] = poll_completion();
         if (poll_ec) {
@@ -514,15 +516,18 @@ struct urma_socket_shared_state_t
           goto loop_end;
         }
         if (n == 0) {
-          // No more completions right now.
-          if (has_pending) break;  // rearm+sleep, let waiters run
-          if (++idle_spins >= busy_poll_budget_) break;
+          if (++idle_spins >= pending_budget) break;
           continue;
         }
         idle_spins = 0;
         // After poll_completion resumes callbacks, has_pending may now be true
-        // (new sends/recvs posted by the resumed coroutines).  Re-check.
-        has_pending = !send_callbacks_.empty() || recv_callback_;
+        // (new sends/recvs posted by the resumed coroutines).  Re-check and
+        // switch to the shorter pending budget so we don't spin too long.
+        bool now_pending = !send_callbacks_.empty() || recv_callback_;
+        if (now_pending && !has_pending) {
+          has_pending = true;
+          pending_budget = 4;
+        }
       }
     }
   loop_end:;
