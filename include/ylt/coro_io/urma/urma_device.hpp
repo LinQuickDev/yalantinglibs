@@ -97,24 +97,6 @@ class urma_device_wrapper_t {
 // Backward compatibility alias
 using urma_device_t = urma_device_wrapper_t;
 
-// Global device management
-class urma_device_manager {
- public:
-  static urma_device_manager& instance();
-  bool init();
-  std::shared_ptr<urma_device_wrapper_t> get_device(const std::string& device_name = "", int eid_index = 0);
-  std::shared_ptr<urma_device_wrapper_t> get_device(const urma_init_config_t& config);
-  std::vector<std::shared_ptr<urma_device_wrapper_t>> get_all_devices();
-  std::shared_ptr<urma_device_wrapper_t> get_global_device();
-
- private:
-  urma_device_manager() = default;
-  ~urma_device_manager();
-  bool initialized_ = false;
-  std::vector<std::shared_ptr<urma_device_wrapper_t>> devices_;
-  std::shared_ptr<urma_device_wrapper_t> global_device_;
-};
-
 // URMA buffer pool configuration
 struct urma_buffer_pool_config_t {
   uint32_t buffer_size = 4 * 1024;             // buffer size
@@ -133,6 +115,24 @@ struct urma_init_config_t {
   // Only applied when dev_name starts with "bonding".
   uint32_t bond_mode = BONDP_BONDING_MODE_STANDALONE;
   uint32_t bond_level = BONDP_BONDING_LEVEL_IODIE;
+};
+
+// Global device management
+class urma_device_manager {
+ public:
+  static urma_device_manager& instance();
+  bool init();
+  std::shared_ptr<urma_device_wrapper_t> get_device(const std::string& device_name = "", int eid_index = 0);
+  std::shared_ptr<urma_device_wrapper_t> get_device(const urma_init_config_t& config);
+  std::vector<std::shared_ptr<urma_device_wrapper_t>> get_all_devices();
+  std::shared_ptr<urma_device_wrapper_t> get_global_device();
+
+ private:
+  urma_device_manager() = default;
+  ~urma_device_manager();
+  bool initialized_ = false;
+  std::vector<std::shared_ptr<urma_device_wrapper_t>> devices_;
+  std::shared_ptr<urma_device_wrapper_t> global_device_;
 };
 
 inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device() {
