@@ -1007,6 +1007,14 @@ class urma_socket_t {
       state_->remote_jetty_.reset(
           urma_import_jetty(state_->device_->context(),
                             &bondp_rjetty.base, &token));
+      // Fall back to plain import if the bonding path is not permitted.
+      if (!state_->remote_jetty_) {
+        ELOG_WARN << "bonding urma_import_jetty failed: errno=" << errno
+                  << ", retrying with plain urma_import_jetty";
+        errno = 0;
+        state_->remote_jetty_.reset(
+            urma_import_jetty(state_->device_->context(), &remote, &token));
+      }
     } else {
       state_->remote_jetty_.reset(
           urma_import_jetty(state_->device_->context(), &remote, &token));
