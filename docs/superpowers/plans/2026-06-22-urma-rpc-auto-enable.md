@@ -37,7 +37,7 @@
 
 - `docs/superpowers/specs/2026-06-22-urma-rpc-auto-enable-design.md`
 
----
+--- 
 
 ## Task 1: Add focused environment parsing tests
 

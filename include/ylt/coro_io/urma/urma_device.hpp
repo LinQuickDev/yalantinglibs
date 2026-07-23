@@ -297,7 +297,7 @@ inline bool urma_device_manager::init() {
   urma_init_attr_t init_attr = {};
   auto status = urma_init(&init_attr);
   if (status != URMA_SUCCESS && status != URMA_EEXIST) {
-    ELOG_ERROR << "urma_init failed";
+    ELOG_ERROR << "urma_init failed， status=%d" << status;
     return false;
   }
   initialized_ = true;
