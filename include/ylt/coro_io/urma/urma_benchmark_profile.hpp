@@ -295,35 +295,64 @@ inline void print(std::ostream& os) {
      << sample_rate_value().load(std::memory_order_relaxed)
      << " unit=us\n";
   os << std::fixed << std::setprecision(2);
+
+  // Compute per-stage stats, grouped by prefix (client/server/urma/benchmark/raw)
+  auto compute_stats = [&](std::size_t s, std::size_t b) {
+    auto& samples = merged[s][b];
+    std::sort(samples.begin(), samples.end());
+    auto percentile = [&](double p) -> double {
+      if (samples.empty()) return 0.0;
+      auto idx = static_cast<std::size_t>((samples.size() - 1) * p);
+      return static_cast<double>(samples[idx]) / 1000.0;
+    };
+    auto sum = std::accumulate(
+        samples.begin(), samples.end(), static_cast<long double>(0),
+        [](long double lhs, uint64_t rhs) { return lhs + rhs; });
+    auto avg = samples.empty()
+                   ? 0.0
+                   : static_cast<double>(sum / samples.size()) / 1000.0;
+    auto mx = samples.empty()
+                  ? 0.0
+                  : static_cast<double>(samples.back()) / 1000.0;
+    struct stage_stats {
+      std::size_t sampled;
+      double avg, p50, p90, p99, p999, max;
+    };
+    return stage_stats{samples.size(), avg,
+                       percentile(0.50), percentile(0.90),
+                       percentile(0.99), percentile(0.999), mx};
+  };
+
+  // Walk stages in enum order, grouping by the prefix before '.'
+  std::string_view prev_group;
   for (std::size_t s = 0; s < merged.size(); ++s) {
     auto total_calls = total_counters[s];
     if (total_calls == 0) continue;
+    auto full = stage_names[s];
+    auto dot = full.find('.');
+    auto group = dot != std::string_view::npos
+                     ? full.substr(0, dot)
+                     : std::string_view{"other"};
+    auto stage_name = dot != std::string_view::npos
+                          ? full.substr(dot + 1)
+                          : full;
+    if (group != prev_group) {
+      os << "\n[" << group << "]\n";
+      prev_group = group;
+    }
+    os << "  " << std::left << std::setw(36) << stage_name
+       << " calls=" << total_calls << "\n";
     for (std::size_t b = 0; b < bucket_count; ++b) {
-      auto& samples = merged[s][b];
-      if (samples.empty()) continue;
-      std::sort(samples.begin(), samples.end());
-      auto percentile = [&](double p) {
-        if (samples.empty()) return 0.0;
-        auto idx = static_cast<std::size_t>((samples.size() - 1) * p);
-        return static_cast<double>(samples[idx]) / 1000.0;
-      };
-      auto sum = std::accumulate(
-          samples.begin(), samples.end(), static_cast<long double>(0),
-          [](long double lhs, uint64_t rhs) { return lhs + rhs; });
-      auto avg = samples.empty()
-                     ? 0.0
-                     : static_cast<double>(sum / samples.size()) / 1000.0;
-      os << "rpc_profile_stage name=" << stage_names[s]
-         << " bucket=" << bucket_names[b]
-         << " calls=" << total_calls
-         << " sampled=" << samples.size()
-         << " avg=" << avg
-         << " p50=" << percentile(0.50)
-         << " p90=" << percentile(0.90)
-         << " p99=" << percentile(0.99)
-         << " p999=" << percentile(0.999)
-         << " max=" << (samples.empty() ? 0.0
-                        : static_cast<double>(samples.back()) / 1000.0)
+      if (merged[s][b].empty()) continue;
+      auto st = compute_stats(s, b);
+      os << "    " << std::left << std::setw(12) << bucket_names[b]
+         << " n=" << std::right << std::setw(8) << st.sampled
+         << " avg=" << std::setw(10) << st.avg
+         << " p50=" << std::setw(10) << st.p50
+         << " p90=" << std::setw(10) << st.p90
+         << " p99=" << std::setw(10) << st.p99
+         << " p999=" << std::setw(10) << st.p999
+         << " max=" << std::setw(10) << st.max
          << "\n";
     }
   }
