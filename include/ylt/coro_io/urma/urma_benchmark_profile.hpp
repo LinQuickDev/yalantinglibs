@@ -296,65 +296,153 @@ inline void print(std::ostream& os) {
      << " unit=us\n";
   os << std::fixed << std::setprecision(2);
 
-  // Compute per-stage stats, grouped by prefix (client/server/urma/benchmark/raw)
-  auto compute_stats = [&](std::size_t s, std::size_t b) {
-    auto& samples = merged[s][b];
-    std::sort(samples.begin(), samples.end());
-    auto percentile = [&](double p) -> double {
-      if (samples.empty()) return 0.0;
-      auto idx = static_cast<std::size_t>((samples.size() - 1) * p);
-      return static_cast<double>(samples[idx]) / 1000.0;
-    };
-    auto sum = std::accumulate(
-        samples.begin(), samples.end(), static_cast<long double>(0),
-        [](long double lhs, uint64_t rhs) { return lhs + rhs; });
-    auto avg = samples.empty()
-                   ? 0.0
-                   : static_cast<double>(sum / samples.size()) / 1000.0;
-    auto mx = samples.empty()
-                  ? 0.0
-                  : static_cast<double>(samples.back()) / 1000.0;
-    struct stage_stats {
-      std::size_t sampled;
-      double avg, p50, p90, p99, p999, max;
-    };
-    return stage_stats{samples.size(), avg,
-                       percentile(0.50), percentile(0.90),
-                       percentile(0.99), percentile(0.999), mx};
+  // stats for one stage (merge all buckets)
+  struct stats {
+    std::size_t calls = 0, sampled = 0;
+    double avg = 0, p50 = 0, p90 = 0, p99 = 0, p999 = 0, max = 0;
   };
-
-  // Walk stages in enum order, grouping by the prefix before '.'
-  std::string_view prev_group;
-  for (std::size_t s = 0; s < merged.size(); ++s) {
-    auto total_calls = total_counters[s];
-    if (total_calls == 0) continue;
-    auto full = stage_names[s];
-    auto dot = full.find('.');
-    auto group = dot != std::string_view::npos
-                     ? full.substr(0, dot)
-                     : std::string_view{"other"};
-    auto stage_name = dot != std::string_view::npos
-                          ? full.substr(dot + 1)
-                          : full;
-    if (group != prev_group) {
-      os << "\n[" << group << "]\n";
-      prev_group = group;
-    }
-    os << "  " << std::left << std::setw(36) << stage_name
-       << " calls=" << total_calls << "\n";
+  auto compute = [&](std::size_t s) -> stats {
+    stats st;
+    st.calls = total_counters[s];
+    std::vector<uint64_t> all;
     for (std::size_t b = 0; b < bucket_count; ++b) {
-      if (merged[s][b].empty()) continue;
-      auto st = compute_stats(s, b);
-      os << "    " << std::left << std::setw(12) << bucket_names[b]
-         << " n=" << std::right << std::setw(8) << st.sampled
-         << " avg=" << std::setw(10) << st.avg
-         << " p50=" << std::setw(10) << st.p50
-         << " p90=" << std::setw(10) << st.p90
-         << " p99=" << std::setw(10) << st.p99
-         << " p999=" << std::setw(10) << st.p999
-         << " max=" << std::setw(10) << st.max
-         << "\n";
+      auto& v = merged[s][b];
+      all.insert(all.end(), v.begin(), v.end());
     }
+    if (all.empty()) return st;
+    st.sampled = all.size();
+    std::sort(all.begin(), all.end());
+    auto pct = [&](double p) {
+      return static_cast<double>(all[static_cast<std::size_t>((all.size()-1)*p)]) / 1000.0;
+    };
+    auto sum = std::accumulate(all.begin(), all.end(), 0LL);
+    st.avg = static_cast<double>(sum) / all.size() / 1000.0;
+    st.p50 = pct(0.50); st.p90 = pct(0.90); st.p99 = pct(0.99);
+    st.p999 = pct(0.999); st.max = static_cast<double>(all.back()) / 1000.0;
+    return st;
+  };
+  // stats for one bucket of one stage
+  auto compute_b = [&](std::size_t s, std::size_t b) -> stats {
+    stats st;
+    st.calls = total_counters[s];
+    auto& v = merged[s][b];
+    if (v.empty()) return st;
+    st.sampled = v.size();
+    std::sort(v.begin(), v.end());
+    auto pct = [&](double p) {
+      return static_cast<double>(v[static_cast<std::size_t>((v.size()-1)*p)]) / 1000.0;
+    };
+    auto sum = std::accumulate(v.begin(), v.end(), 0LL);
+    st.avg = static_cast<double>(sum) / v.size() / 1000.0;
+    st.p50 = pct(0.50); st.p90 = pct(0.90); st.p99 = pct(0.99);
+    st.p999 = pct(0.999); st.max = static_cast<double>(v.back()) / 1000.0;
+    return st;
+  };
+  (void)compute_b;  // bucket detail available if needed later
+
+  // Print a line with stats, at given indent level
+  auto line = [&](int indent, std::string_view label, const stats& st) {
+    for (int i = 0; i < indent; ++i) os << "  ";
+    os << std::left << std::setw(32 - indent * 2) << label
+       << " n=" << std::right << std::setw(8) << st.sampled
+       << " avg=" << std::setw(10) << st.avg
+       << " p50=" << std::setw(10) << st.p50
+       << " p90=" << std::setw(10) << st.p90
+       << " p99=" << std::setw(10) << st.p99
+       << " p999=" << std::setw(10) << st.p999
+       << " max=" << std::setw(10) << st.max
+       << "\n";
+  };
+  auto line_calls = [&](int indent, std::string_view label, uint32_t calls) {
+    for (int i = 0; i < indent; ++i) os << "  ";
+    os << std::left << std::setw(32 - indent * 2) << label
+       << " calls=" << calls << "\n";
+  };
+  auto has = [&](std::size_t s) { return total_counters[s] > 0; };
+
+  // ── Client ──
+  os << "\n[client]\n";
+  // Send phase
+  if (has(static_cast<std::size_t>(stage::client_send_request))) {
+    auto st = compute(static_cast<std::size_t>(stage::client_send_request));
+    line(0, "send_request", st);
+    if (has(static_cast<std::size_t>(stage::client_prepare_request)))
+      line(1, "prepare_request", compute(static_cast<std::size_t>(stage::client_prepare_request)));
+    if (has(static_cast<std::size_t>(stage::urma_write_total))) {
+      line(1, "urma.write_total", compute(static_cast<std::size_t>(stage::urma_write_total)));
+      if (has(static_cast<std::size_t>(stage::urma_write_copy)))
+        line(2, "write_copy", compute(static_cast<std::size_t>(stage::urma_write_copy)));
+      if (has(static_cast<std::size_t>(stage::urma_post_send)))
+        line(2, "post_send", compute(static_cast<std::size_t>(stage::urma_post_send)));
+      if (has(static_cast<std::size_t>(stage::urma_wait_send_completion)))
+        line(2, "wait_send_completion", compute(static_cast<std::size_t>(stage::urma_wait_send_completion)));
+    }
+  }
+  // Recv phase
+  if (has(static_cast<std::size_t>(stage::client_recv_header))) {
+    auto st = compute(static_cast<std::size_t>(stage::client_recv_header));
+    line(0, "recv_header", st);
+    if (has(static_cast<std::size_t>(stage::urma_read_wait_completion)))
+      line(1, "urma.read_wait_completion", compute(static_cast<std::size_t>(stage::urma_read_wait_completion)));
+    if (has(static_cast<std::size_t>(stage::urma_read_copy)))
+      line(1, "urma.read_copy", compute(static_cast<std::size_t>(stage::urma_read_copy)));
+  }
+  if (has(static_cast<std::size_t>(stage::client_recv_payload))) {
+    auto st = compute(static_cast<std::size_t>(stage::client_recv_payload));
+    line(0, "recv_payload", st);
+  }
+  if (has(static_cast<std::size_t>(stage::client_deserialize_response)))
+    line(0, "deserialize_response", compute(static_cast<std::size_t>(stage::client_deserialize_response)));
+  // Connect
+  if (has(static_cast<std::size_t>(stage::client_connect_total))) {
+    auto st = compute(static_cast<std::size_t>(stage::client_connect_total));
+    line(0, "connect_total", st);
+    if (has(static_cast<std::size_t>(stage::client_connect_tcp)))
+      line(1, "connect_tcp", compute(static_cast<std::size_t>(stage::client_connect_tcp)));
+    if (has(static_cast<std::size_t>(stage::client_connect_handshake)))
+      line(1, "connect_handshake", compute(static_cast<std::size_t>(stage::client_connect_handshake)));
+  }
+
+  // ── Server ──
+  bool has_server = has(static_cast<std::size_t>(stage::server_read_header)) ||
+                    has(static_cast<std::size_t>(stage::server_dispatch));
+  if (has_server) {
+    os << "\n[server]\n";
+    if (has(static_cast<std::size_t>(stage::server_read_header)))
+      line(0, "read_header", compute(static_cast<std::size_t>(stage::server_read_header)));
+    if (has(static_cast<std::size_t>(stage::server_read_payload))) {
+      auto st = compute(static_cast<std::size_t>(stage::server_read_payload));
+      line(0, "read_payload", st);
+      if (has(static_cast<std::size_t>(stage::urma_read_wait_completion)))
+        line(1, "urma.read_wait_completion", compute(static_cast<std::size_t>(stage::urma_read_wait_completion)));
+      if (has(static_cast<std::size_t>(stage::urma_read_copy)))
+        line(1, "urma.read_copy", compute(static_cast<std::size_t>(stage::urma_read_copy)));
+    }
+    if (has(static_cast<std::size_t>(stage::server_dispatch)))
+      line(0, "dispatch", compute(static_cast<std::size_t>(stage::server_dispatch)));
+    if (has(static_cast<std::size_t>(stage::server_serialize_response)))
+      line(0, "serialize_response", compute(static_cast<std::size_t>(stage::server_serialize_response)));
+    if (has(static_cast<std::size_t>(stage::server_response_queue)))
+      line(0, "response_queue", compute(static_cast<std::size_t>(stage::server_response_queue)));
+    if (has(static_cast<std::size_t>(stage::server_send_response))) {
+      auto st = compute(static_cast<std::size_t>(stage::server_send_response));
+      line(0, "send_response", st);
+      if (has(static_cast<std::size_t>(stage::urma_write_total))) {
+        line(1, "urma.write_total", compute(static_cast<std::size_t>(stage::urma_write_total)));
+        if (has(static_cast<std::size_t>(stage::urma_write_copy)))
+          line(2, "write_copy", compute(static_cast<std::size_t>(stage::urma_write_copy)));
+        if (has(static_cast<std::size_t>(stage::urma_post_send)))
+          line(2, "post_send", compute(static_cast<std::size_t>(stage::urma_post_send)));
+        if (has(static_cast<std::size_t>(stage::urma_wait_send_completion)))
+          line(2, "wait_send_completion", compute(static_cast<std::size_t>(stage::urma_wait_send_completion)));
+      }
+    }
+  }
+
+  // ── URMA (standalone, only if not already shown under client/server) ──
+  if (has(static_cast<std::size_t>(stage::urma_read_view))) {
+    os << "\n[urma]\n";
+    line(0, "read_view", compute(static_cast<std::size_t>(stage::urma_read_view)));
   }
 }
 
