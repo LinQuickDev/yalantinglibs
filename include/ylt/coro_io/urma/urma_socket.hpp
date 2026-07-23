@@ -498,15 +498,14 @@ struct urma_socket_shared_state_t
         uint32_t ack_cnt = 1;
         urma_ack_jfc(&ev_jfc, &ack_cnt, 1);
       }
-      // Drain completions, then spin-poll to batch the burst that typically
-      // follows an event under request/response traffic.  Each poll that yields
-      // completions resets the idle counter so a steady stream never sleeps;
-      // only `busy_poll_budget_` consecutive empty polls trigger rearm+sleep.
-      // When there are pending send callbacks or a recv callback, spin longer
-      // (4x budget) to avoid sleeping while a completion is imminent, which
-      // would inflate wait_send_completion / read_wait_completion latency.
+      // Drain all completions from this event, then decide:
+      // - If there are pending callbacks (send/recv waiting), skip spin and
+      //   go straight to rearm+sleep so other event_loop coroutines (and
+      //   the resumed callback coroutines) get CPU time.  This prevents
+      //   starvation under high load where many connections compete.
+      // - If no pending callbacks, spin-poll briefly to catch a burst.
+      bool has_pending = !send_callbacks_.empty() || recv_callback_;
       std::size_t idle_spins = 0;
-      std::size_t processed_since_yield = 0;
       while (!has_close_) {
         auto [poll_ec, n] = poll_completion();
         if (poll_ec) {
@@ -515,24 +514,15 @@ struct urma_socket_shared_state_t
           goto loop_end;
         }
         if (n == 0) {
-          std::size_t budget = busy_poll_budget_;
-          if (!send_callbacks_.empty() || recv_callback_)
-            budget *= 4;
-          if (++idle_spins >= budget) break;
+          // No more completions right now.
+          if (has_pending) break;  // rearm+sleep, let waiters run
+          if (++idle_spins >= busy_poll_budget_) break;
           continue;
         }
         idle_spins = 0;
-        processed_since_yield += n;
-        // Yield periodically so coroutines resumed by poll_completion (send/recv
-        // callbacks) get a chance to run, preventing starvation under high load.
-        if (processed_since_yield >= 8) {
-          processed_since_yield = 0;
-          coro_io::callback_awaitor<void> yield_awaitor;
-          co_await yield_awaitor.await_resume([&self](auto handler) {
-            asio::post(self->executor_->get_asio_executor(),
-                       [handler]() mutable { handler.resume(); });
-          });
-        }
+        // After poll_completion resumes callbacks, has_pending may now be true
+        // (new sends/recvs posted by the resumed coroutines).  Re-check.
+        has_pending = !send_callbacks_.empty() || recv_callback_;
       }
     }
   loop_end:;
