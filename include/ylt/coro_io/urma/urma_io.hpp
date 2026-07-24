@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "async_simple/Promise.h"
+#include "async_simple/util/move_only_function.h"
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
 #include "ylt/coro_io/urma/urma_socket.hpp"
@@ -40,23 +41,31 @@ void make_urma_buffers(std::vector<AsioBuffer>& result,
 
 struct urma_write_completion_state {
   std::queue<std::pair<std::error_code, std::size_t>> completions;
-  std::optional<async_simple::Promise<void>> waiter;
+  async_simple::util::move_only_function<void()> resume_handler;
 
   void push(std::pair<std::error_code, std::size_t> result) {
     completions.push(result);
-    if (!waiter) return;
-    auto promise = std::move(*waiter);
-    waiter.reset();
-    promise.setValue();
+    if (resume_handler) {
+      auto h = std::move(resume_handler);
+      resume_handler = nullptr;
+      h();
+    }
   }
 };
 
 inline async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>>
 wait_urma_write_completion(
-    const std::shared_ptr<urma_write_completion_state>& state) {
+    const std::shared_ptr<urma_write_completion_state>& state,
+    urma_socket_t& socket) {
   while (state->completions.empty()) {
-    state->waiter.emplace();
-    co_await state->waiter->getFuture();
+    co_await coro_io::async_io<void>(
+        [&state](auto&& handler) {
+          state->resume_handler = [handler]() mutable {
+            handler.set_value();
+            handler.resume();
+          };
+        },
+        socket);
   }
   auto result = state->completions.front();
   state->completions.pop();
@@ -227,7 +236,7 @@ async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>> async_write(
     auto wait_begin = urma_benchmark_profile::enabled()
                           ? urma_benchmark_profile::now_ns()
                           : 0;
-    auto result = co_await detail::wait_urma_write_completion(state);
+    auto result = co_await detail::wait_urma_write_completion(state, socket);
     urma_benchmark_profile::record_since(
         urma_benchmark_profile::stage::urma_wait_send_completion, wait_begin);
     --in_flight;
