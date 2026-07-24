@@ -58,14 +58,12 @@ wait_urma_write_completion(
     const std::shared_ptr<urma_write_completion_state>& state,
     urma_socket_t& socket) {
   while (state->completions.empty()) {
-    co_await coro_io::async_io<void>(
-        [&state](auto&& handler) {
-          state->resume_handler = [handler]() mutable {
-            handler.set_value();
-            handler.resume();
-          };
-        },
-        socket);
+    callback_awaitor<void> awaitor;
+    co_await awaitor.await_resume([&state](auto handler) {
+      state->resume_handler = [handler]() mutable {
+        handler.resume();
+      };
+    });
   }
   auto result = state->completions.front();
   state->completions.pop();
