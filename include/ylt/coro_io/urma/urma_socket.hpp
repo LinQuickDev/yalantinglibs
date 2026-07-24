@@ -1012,27 +1012,23 @@ class urma_socket_t {
 
     urma_token_t token{};
     errno = 0;
-    auto dev_name = state_->device_->name();
-    if (dev_name.compare(0, 7, "bonding") == 0 &&
+    state_->remote_jetty_.reset(
+        urma_import_jetty(state_->device_->context(), &remote, &token));
+    // If plain import fails on a bonding device, retry with the bonding
+    // extension (has_drv_ext=1 + local jetty).
+    if (!state_->remote_jetty_ &&
+        state_->device_->name().compare(0, 7, "bonding") == 0 &&
         remote.trans_mode == URMA_TM_RM) {
+      ELOG_WARN << "plain urma_import_jetty failed: errno=" << errno
+                << ", retrying with bonding extension";
       bondp_rjetty_t bondp_rjetty{};
       bondp_rjetty.base = remote;
       bondp_rjetty.base.flag.bs.has_drv_ext = 1;
       bondp_rjetty.jetty = state_->jetty_.get();
+      errno = 0;
       state_->remote_jetty_.reset(
           urma_import_jetty(state_->device_->context(),
                             &bondp_rjetty.base, &token));
-      // Fall back to plain import if the bonding path is not permitted.
-      if (!state_->remote_jetty_) {
-        ELOG_WARN << "bonding urma_import_jetty failed: errno=" << errno
-                  << ", retrying with plain urma_import_jetty";
-        errno = 0;
-        state_->remote_jetty_.reset(
-            urma_import_jetty(state_->device_->context(), &remote, &token));
-      }
-    } else {
-      state_->remote_jetty_.reset(
-          urma_import_jetty(state_->device_->context(), &remote, &token));
     }
     if (!state_->remote_jetty_) {
       auto error = errno != 0
