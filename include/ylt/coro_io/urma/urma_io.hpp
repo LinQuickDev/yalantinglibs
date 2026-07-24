@@ -57,13 +57,7 @@ inline async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>>
 wait_urma_write_completion(
     const std::shared_ptr<urma_write_completion_state>& state,
     urma_socket_t& socket) {
-  // Poll briefly (64 iterations ~3us) for an imminent CQE.  If not ready,
-  // yield to the executor via sleep_for(5us) and retry, instead of
-  // busy-spinning 2000 times.  This lets other coroutines (RPC handlers)
-  // run between polls, trading a few us of latency for CPU.
-  for (int i = 0; i < 64 && state->completions.empty(); ++i) {
-    socket.poll_completion_once();
-  }
+  // Poll with sleep(5us) between each attempt, yielding CPU to RPC handlers.
   while (state->completions.empty()) {
     co_await coro_io::sleep_for(std::chrono::microseconds(5));
     socket.poll_completion_once();
