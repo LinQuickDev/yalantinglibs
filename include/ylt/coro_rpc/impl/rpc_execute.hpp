@@ -25,6 +25,7 @@
 
 #include "context.hpp"
 #include "coro_connection.hpp"
+#include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
 #include "ylt/coro_rpc/impl/errno.h"
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack/compatible.hpp"
@@ -79,6 +80,9 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
 
     bool is_ok = true;
     constexpr size_t size = std::tuple_size_v<decltype(args)>;
+    auto deser_begin = coro_io::urma_benchmark_profile::enabled()
+                           ? coro_io::urma_benchmark_profile::now_ns()
+                           : 0;
     if constexpr (size > 0) {
       is_ok = serialize_proto::deserialize_to(args, data);
     }
@@ -105,6 +109,9 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
         }
       }
     }
+    coro_io::urma_benchmark_profile::record_since_with_size(
+        coro_io::urma_benchmark_profile::stage::server_deserialize_request,
+        deser_begin, data.size());
 
     if constexpr (std::is_void_v<return_type>) {
       if constexpr (std::is_void_v<Self>) {
