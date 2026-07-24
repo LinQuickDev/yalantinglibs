@@ -65,8 +65,10 @@ enum class stage : uint8_t {
   server_read_header,
   server_read_payload,
   server_deserialize_request,
+  server_handler_execute,
   server_dispatch,
   server_serialize_response,
+  server_serialize_result,
   server_response_queue,
   server_send_response,
   client_connect_total,
@@ -95,8 +97,10 @@ inline constexpr std::array<std::string_view,
         "server.read_header",
         "server.read_payload",
         "server.deserialize_request",
+        "server.handler_execute",
         "server.dispatch",
         "server.serialize_response",
+        "server.serialize_result",
         "server.response_queue",
         "server.send_response",
         "client.connect_total",
@@ -427,8 +431,13 @@ inline void print(std::ostream& os) {
     }
     if (has(static_cast<std::size_t>(stage::server_dispatch))) {
       parent(0, false, "dispatch", st(stage::server_dispatch));
-      if (has(static_cast<std::size_t>(stage::server_deserialize_request)))
-        node(1, true, "deserialize_request", st(stage::server_deserialize_request));
+      bool has_deser = has(static_cast<std::size_t>(stage::server_deserialize_request));
+      bool has_exec = has(static_cast<std::size_t>(stage::server_handler_execute));
+      bool has_sres = has(static_cast<std::size_t>(stage::server_serialize_result));
+      int cnt = has_deser + has_exec + has_sres;
+      if (has_deser) node(1, --cnt == 0, "deserialize_request", st(stage::server_deserialize_request));
+      if (has_exec) node(1, --cnt == 0, "handler_execute", st(stage::server_handler_execute));
+      if (has_sres) node(1, --cnt == 0, "serialize_result", st(stage::server_serialize_result));
     }
     if (has(static_cast<std::size_t>(stage::server_serialize_response)))
       parent(0, false, "serialize_response", st(stage::server_serialize_response));
