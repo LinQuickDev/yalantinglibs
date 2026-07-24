@@ -804,6 +804,8 @@ class urma_socket_t {
     return state_->wait_for_send_slot(send_window_size_);
   }
 
+  void poll_completion_once() { state_->poll_completion(); }
+
   std::size_t sent_request_count() const noexcept {
     return state_->send_callbacks_.size();
   }
