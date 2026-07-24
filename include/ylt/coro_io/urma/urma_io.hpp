@@ -57,10 +57,17 @@ inline async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>>
 wait_urma_write_completion(
     const std::shared_ptr<urma_write_completion_state>& state,
     urma_socket_t& socket) {
-  // Poll with sleep(5us) between each attempt, yielding CPU to RPC handlers.
+  // Suspend until event_loop polls the CQ and calls state->push.
+  // Unlike sleep_for, this does not create a timer - the coroutine
+  // is resumed directly by event_loop's poll_completion via callback_awaitor,
+  // same as recv path (async_urma_read).
   while (state->completions.empty()) {
-    co_await coro_io::sleep_for(std::chrono::microseconds(5));
-    socket.poll_completion_once();
+    callback_awaitor<void> awaitor;
+    co_await awaitor.await_resume([&state](auto handler) {
+      state->resume_handler = [handler]() mutable {
+        handler.resume();
+      };
+    });
   }
   if (!state->completions.empty()) {
     auto result = state->completions.front();

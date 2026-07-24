@@ -507,7 +507,7 @@ struct urma_socket_shared_state_t
       //   burst of idle traffic.
       bool has_pending = !send_callbacks_.empty() || recv_callback_;
       std::size_t idle_spins = 0;
-      std::size_t pending_budget = has_pending ? 4 : busy_poll_budget_;
+      std::size_t pending_budget = has_pending ? 64 : busy_poll_budget_;
       while (!has_close_) {
         auto [poll_ec, n] = poll_completion();
         if (poll_ec) {
