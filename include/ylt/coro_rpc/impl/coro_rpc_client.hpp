@@ -1894,9 +1894,11 @@ class coro_rpc_client {
             });
           });
         }
-        auto rpc_result = co_await deserialize_rpc_result<rpc_return_t>(
+        auto rpc_future = deserialize_rpc_result<rpc_return_t>(
             std::move(future), std::weak_ptr<control_t>{control_},
             std::move(guard), config_.client_id);
+        // Wrap to record total RPC time after deserialize completes.
+        auto rpc_result = co_await std::move(rpc_future);
         coro_io::urma_benchmark_profile::record_since(
             coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
             rpc_begin);
