@@ -1850,6 +1850,9 @@ class coro_rpc_client {
       async_rpc_result<decltype(get_return_type<func>())>>>
   send_request(request_config_t config, Args &&...args) {
     using rpc_return_t = decltype(get_return_type<func>());
+    auto rpc_begin = coro_io::urma_benchmark_profile::enabled()
+                         ? coro_io::urma_benchmark_profile::now_ns()
+                         : 0;
     recving_guard guard(control_.get());
     uint32_t id;
     if (!config.request_timeout_duration) {
@@ -1891,9 +1894,15 @@ class coro_rpc_client {
             });
           });
         }
-        co_return deserialize_rpc_result<rpc_return_t>(
-            std::move(future), std::weak_ptr<control_t>{control_},
-            std::move(guard), config_.client_id);
+        co_return co_await [&]() -> async_simple::coro::Lazy<async_rpc_result<rpc_return_t>> {
+          auto result = co_await deserialize_rpc_result<rpc_return_t>(
+              std::move(future), std::weak_ptr<control_t>{control_},
+              std::move(guard), config_.client_id);
+          coro_io::urma_benchmark_profile::record_since(
+              coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
+              rpc_begin);
+          co_return result;
+        }();
       }
     }
     else {
