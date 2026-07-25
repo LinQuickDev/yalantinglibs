@@ -623,7 +623,7 @@ struct urma_socket_shared_state_t
   bool peer_close_ = false;
   bool event_mode_enabled_ = false;
   std::size_t busy_poll_budget_ = 16;
-  std::chrono::microseconds idle_poll_interval_{5000};
+  std::chrono::microseconds idle_poll_interval_{5};
   static constexpr std::size_t max_active_poll_budget_ = 64;
   std::size_t active_poll_budget_ = max_active_poll_budget_;
   std::string init_stage_;
