@@ -375,6 +375,12 @@ inline void print(std::ostream& os) {
   auto has = [&](std::size_t s) { return total_counters[s] > 0; };
   auto st = [&](stage s) { return compute(static_cast<std::size_t>(s)); };
 
+  // ── Benchmark ──
+  if (has(static_cast<std::size_t>(stage::benchmark_rpc_call))) {
+    os << "\n[benchmark]\n";
+    parent(0, true, "rpc_call (total)", st(stage::benchmark_rpc_call));
+  }
+
   // ── Client ──
   os << "\n[client]\n";
   if (has(static_cast<std::size_t>(stage::client_send_request))) {
