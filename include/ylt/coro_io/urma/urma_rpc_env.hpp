@@ -132,6 +132,11 @@ inline coro_io::urma_socket_t::config_t make_urma_rpc_config_from_env() {
       urma_rpc_env_flag("URMA_RPC_EVENT_MODE", /*default*/ true);
   urma_rpc_parse_env_integer("URMA_RPC_BUSY_POLL_BUDGET",
                                config.busy_poll_budget);
+  {
+    uint64_t interval_us = 5;
+    urma_rpc_parse_env_integer("URMA_RPC_POLL_INTERVAL", interval_us);
+    config.poll_interval = std::chrono::microseconds(interval_us);
+  }
 
   return config;
 }

@@ -623,7 +623,7 @@ struct urma_socket_shared_state_t
   bool peer_close_ = false;
   bool event_mode_enabled_ = false;
   std::size_t busy_poll_budget_ = 16;
-  static constexpr std::chrono::microseconds idle_poll_interval_{5};
+  std::chrono::microseconds idle_poll_interval_{5000};
   static constexpr std::size_t max_active_poll_budget_ = 64;
   std::size_t active_poll_budget_ = max_active_poll_budget_;
   std::string init_stage_;
@@ -645,6 +645,7 @@ class urma_socket_t {
     urma_tp_type_t tp_type = URMA_CTP;
     bool event_mode = true;
     std::size_t busy_poll_budget = 16;
+    std::chrono::microseconds poll_interval{5};
   };
 
   enum io_type { recv = 0, send = 1 };
@@ -936,6 +937,7 @@ class urma_socket_t {
         std::move(device), executor_, conf_.recv_buffer_cnt,
         conf_.send_buffer_cnt, conf_.cq_size);
     state_->busy_poll_budget_ = conf_.busy_poll_budget;
+    state_->idle_poll_interval_ = conf_.poll_interval;
     if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt, conf_.event_mode)) {
       auto stage = state_->init_stage_;
       auto error = state_->init_error_;
