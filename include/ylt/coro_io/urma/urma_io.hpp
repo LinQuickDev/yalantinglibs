@@ -57,9 +57,27 @@ inline async_simple::coro::Lazy<std::pair<std::error_code, std::size_t>>
 wait_urma_write_completion(
     const std::shared_ptr<urma_write_completion_state>& state,
     urma_socket_t& socket) {
+  // Busy-poll the CQ directly on the calling thread.  The CQE typically
+  // arrives within 1-10us, but under load it can take longer.  Spin up to
+  // 2000 iterations (~50-100us) to catch it without suspending, avoiding
+  // the 50-300us event_loop wakeup latency.  Only suspend if still not
+  // ready after the spin budget.
+  for (int i = 0; i < 2000 && state->completions.empty(); ++i) {
+    socket.poll_completion_once();
+  }
+  if (!state->completions.empty()) {
+    auto result = state->completions.front();
+    state->completions.pop();
+    co_return result;
+  }
+  // CQE not ready after spin - suspend until event_loop polls and calls push.
   while (state->completions.empty()) {
-    state->waiter.emplace();
-    co_wait state->waiter->getFuture();
+    callback_awaitor<void> awaitor;
+    co_await awaitor.await_resume([&state](auto handler) {
+      state->resume_handler = [handler]() mutable {
+        handler.resume();
+      };
+    });
   }
   auto result = state->completions.front();
   state->completions.pop();
