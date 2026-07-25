@@ -1894,15 +1894,13 @@ class coro_rpc_client {
             });
           });
         }
-        co_return co_await [&]() -> async_simple::coro::Lazy<async_rpc_result<rpc_return_t>> {
-          auto result = co_await deserialize_rpc_result<rpc_return_t>(
-              std::move(future), std::weak_ptr<control_t>{control_},
-              std::move(guard), config_.client_id);
-          coro_io::urma_benchmark_profile::record_since(
-              coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-              rpc_begin);
-          co_return result;
-        }();
+        auto rpc_result = co_await deserialize_rpc_result<rpc_return_t>(
+            std::move(future), std::weak_ptr<control_t>{control_},
+            std::move(guard), config_.client_id);
+        coro_io::urma_benchmark_profile::record_since(
+            coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
+            rpc_begin);
+        co_return rpc_result;
       }
     }
     else {
