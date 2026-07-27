@@ -1474,6 +1474,7 @@ class coro_rpc_client {
     std::atomic<uint32_t> recving_cnt_ = 0;
     std::atomic<bool> recv_running_ = false;
     uint64_t client_id = 0;
+    std::size_t last_req_payload_size = 0;
     control_t(coro_io::ExecutorWrapper<> *executor, bool is_timeout,
               const std::string &local_ip)
         : is_timeout_(is_timeout),
@@ -1765,12 +1766,13 @@ class coro_rpc_client {
   static async_simple::coro::Lazy<async_rpc_result<T>> deserialize_rpc_result(
       async_simple::Future<async_rpc_raw_result> future,
       std::weak_ptr<control_t> watcher, recving_guard guard,
-      uint64_t client_id, uint64_t rpc_begin = 0) {
-    auto record_rpc = [&](std::size_t payload_size = 0) {
+      uint64_t client_id, uint64_t rpc_begin = 0,
+      std::size_t req_payload_size = 0) {
+    auto record_rpc = [&]() {
       if (rpc_begin)
         coro_io::urma_benchmark_profile::record_since_with_size(
             coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-            rpc_begin, payload_size);
+            rpc_begin, req_payload_size);
     };
     auto ret_ = co_await std::move(future);
     guard.release();
@@ -1798,7 +1800,7 @@ class coro_rpc_client {
     coro_io::urma_benchmark_profile::record_since_with_size(
         coro_io::urma_benchmark_profile::stage::client_deserialize_response,
         deser_begin, ret.buffer_.read_buf_.size());
-    record_rpc(ret.buffer_.read_buf_.size() + ret.attachment.size());
+    record_rpc();
     if (has_error) {
       if (auto w = watcher.lock(); w) {
         close_socket_async(std::move(w));
@@ -1904,7 +1906,8 @@ class coro_rpc_client {
         }
         co_return deserialize_rpc_result<rpc_return_t>(
             std::move(future), std::weak_ptr<control_t>{control_},
-            std::move(guard), config_.client_id, rpc_begin);
+            std::move(guard), config_.client_id, rpc_begin,
+            control_->last_req_payload_size);
       }
     }
     else {
@@ -1927,6 +1930,7 @@ class coro_rpc_client {
     auto buffer = prepare_buffer<func>(id, req_attachment.size(),
                                        std::forward<Args>(args)...);
     auto payload_size = buffer.size() + req_attachment.size();
+    control_->last_req_payload_size = payload_size;
     coro_io::urma_benchmark_profile::record_since_with_size(
         coro_io::urma_benchmark_profile::stage::client_prepare_request,
         prepare_begin, payload_size);
