@@ -381,9 +381,8 @@ inline void print(std::ostream& os) {
       auto& v = merged[static_cast<std::size_t>(s)][b];
       if (v.empty()) continue;
       auto bst = compute_b(static_cast<std::size_t>(s), b);
-      for (int i = 0; i < indent; ++i) os << (i < indent - 1 ? "│  " : "   ");
-      os << (indent > 0 ? "   " : "")
-         << std::left << std::setw(12) << bucket_names[b]
+      for (int i = 0; i < indent; ++i) os << "  ";
+      os << "  [" << bucket_names[b] << "]"
          << " n=" << std::right << std::setw(8) << bst.sampled
          << " avg=" << std::setw(10) << bst.avg
          << " p50=" << std::setw(10) << bst.p50
