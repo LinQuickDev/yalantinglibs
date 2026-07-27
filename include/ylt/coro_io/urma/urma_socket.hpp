@@ -719,8 +719,8 @@ class urma_socket_t {
                           : 0;
     auto ec =
         co_await coro_io::async_connect(executor_, state_->socket_, host, port);
-    coro_io::urma_benchmark_profile::record_since(
-        coro_io::urma_benchmark_profile::stage::client_connect_tcp, tcp_begin);
+    coro_io::urma_benchmark_profile::record_since_with_size(
+        coro_io::urma_benchmark_profile::stage::client_connect_tcp, tcp_begin, 0);
     if (!ec) ec = co_await connect_impl();
     if (ec) close();
     co_return ec;
@@ -733,8 +733,8 @@ class urma_socket_t {
                           ? coro_io::urma_benchmark_profile::now_ns()
                           : 0;
     auto ec = co_await coro_io::async_connect(state_->socket_, endpoint);
-    coro_io::urma_benchmark_profile::record_since(
-        coro_io::urma_benchmark_profile::stage::client_connect_tcp, tcp_begin);
+    coro_io::urma_benchmark_profile::record_since_with_size(
+        coro_io::urma_benchmark_profile::stage::client_connect_tcp, tcp_begin, 0);
     if (!ec) ec = co_await connect_impl();
     if (ec) close();
     co_return ec;
@@ -1084,9 +1084,9 @@ class urma_socket_t {
     if (ec) co_return ec;
     record_handshake_endpoints();
     close_handshake_socket();
-    coro_io::urma_benchmark_profile::record_since(
+    coro_io::urma_benchmark_profile::record_since_with_size(
         coro_io::urma_benchmark_profile::stage::client_connect_handshake,
-        handshake_begin);
+        handshake_begin, 0);
     state_->start_completion_watch();
     co_return std::error_code{};
   }

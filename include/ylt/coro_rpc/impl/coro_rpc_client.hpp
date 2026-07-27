@@ -1585,9 +1585,6 @@ class coro_rpc_client {
                                ? coro_io::urma_benchmark_profile::now_ns()
                                : 0;
       ret = co_await coro_io::async_read(socket, asio::buffer(buffer));
-      coro_io::urma_benchmark_profile::record_since(
-          coro_io::urma_benchmark_profile::stage::client_recv_header,
-          profile_begin);
       [[maybe_unused]] auto ec = struct_pack::deserialize_to<
           struct_pack::sp_config::DISABLE_ALL_META_INFO>(
           header, std::string_view{buffer, buffer + sizeof(buffer)});
@@ -1617,6 +1614,9 @@ class coro_rpc_client {
                  << ", client_id: " << controller->client_id;
       uint32_t body_len = header.length;
       auto resp_payload_size = body_len + header.attach_length;
+      coro_io::urma_benchmark_profile::record_since_with_size(
+          coro_io::urma_benchmark_profile::stage::client_recv_header,
+          profile_begin, resp_payload_size);
       struct_pack::detail::resize(
           controller->resp_buffer_.read_buf_,
           std::max<uint32_t>(body_len, sizeof(std::string)));
