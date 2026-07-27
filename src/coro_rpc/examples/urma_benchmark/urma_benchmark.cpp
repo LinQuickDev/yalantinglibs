@@ -428,39 +428,20 @@ Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
 
 Lazy<bool> issue_rpc_call(coro_rpc_client& client, const std::string& payload,
                           std::string_view rpc, bool profile_call) {
-  auto profile_begin = profile_call && coro_io::urma_benchmark_profile::enabled()
-                           ? coro_io::urma_benchmark_profile::now_ns()
-                           : 0;
-  auto payload_size = payload.size();
   bool ok = false;
   if (rpc == "attach_sink") {
     auto result = co_await client.call<bench_attachment_sink>(
         request_config_t{30s, payload, {}, -1, -1});
     ok = result && result.value() == payload.size();
-    if (profile_call) {
-      coro_io::urma_benchmark_profile::record_since_with_size(
-          coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-          profile_begin, payload_size);
-    }
     co_return ok;
   }
   if (rpc == "sink") {
     auto result = co_await client.call_for<bench_sink>(30s, payload);
     ok = result && result.value() == payload.size();
-    if (profile_call) {
-      coro_io::urma_benchmark_profile::record_since_with_size(
-          coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-          profile_begin, payload_size);
-    }
     co_return ok;
   }
   auto result = co_await client.call_for<bench_echo>(30s, payload);
   ok = result && result.value().size() == payload.size();
-  if (profile_call) {
-    coro_io::urma_benchmark_profile::record_since_with_size(
-        coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-        profile_begin, payload_size);
-  }
   co_return ok;
 }
 

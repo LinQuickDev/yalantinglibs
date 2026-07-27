@@ -1475,6 +1475,7 @@ class coro_rpc_client {
     std::atomic<bool> recv_running_ = false;
     uint64_t client_id = 0;
     std::size_t last_req_payload_size = 0;
+    std::string last_func_name;
     control_t(coro_io::ExecutorWrapper<> *executor, bool is_timeout,
               const std::string &local_ip)
         : is_timeout_(is_timeout),
@@ -1767,12 +1768,17 @@ class coro_rpc_client {
       async_simple::Future<async_rpc_raw_result> future,
       std::weak_ptr<control_t> watcher, recving_guard guard,
       uint64_t client_id, uint64_t rpc_begin = 0,
-      std::size_t req_payload_size = 0) {
+      std::string func_name = {}) {
     auto record_rpc = [&]() {
-      if (rpc_begin)
-        coro_io::urma_benchmark_profile::record_since_with_size(
-            coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-            rpc_begin, req_payload_size);
+      if (rpc_begin) {
+        if (!func_name.empty())
+          coro_io::urma_benchmark_profile::record_rpc_call_by_name_since(
+              func_name, rpc_begin);
+        else
+          coro_io::urma_benchmark_profile::record_since(
+              coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
+              rpc_begin);
+      }
     };
     auto ret_ = co_await std::move(future);
     guard.release();
@@ -1870,6 +1876,7 @@ class coro_rpc_client {
     }
     assert(config.request_timeout_duration.has_value());
 
+    control_->last_func_name = std::string(get_func_name<func>());
     auto timer = std::make_unique<coro_io::period_timer>(
         control_->executor_->get_asio_executor());
     auto result = co_await control_->socket_wrapper_.visit([&](auto &socket) {
@@ -1907,7 +1914,7 @@ class coro_rpc_client {
         co_return deserialize_rpc_result<rpc_return_t>(
             std::move(future), std::weak_ptr<control_t>{control_},
             std::move(guard), config_.client_id, rpc_begin,
-            control_->last_req_payload_size);
+            control_->last_func_name);
       }
     }
     else {
