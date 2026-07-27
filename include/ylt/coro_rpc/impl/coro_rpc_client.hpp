@@ -1771,13 +1771,10 @@ class coro_rpc_client {
       std::string func_name = {}) {
     auto record_rpc = [&]() {
       if (rpc_begin) {
-        if (!func_name.empty())
-          coro_io::urma_benchmark_profile::record_rpc_call_by_name_since(
-              func_name, rpc_begin);
-        else
-          coro_io::urma_benchmark_profile::record_since(
-              coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-              rpc_begin);
+        std::string_view name = func_name;
+        if (name.empty()) name = "rpc_call";
+        coro_io::urma_benchmark_profile::record_rpc_call_by_name_since(
+            name, rpc_begin);
       }
     };
     auto ret_ = co_await std::move(future);
