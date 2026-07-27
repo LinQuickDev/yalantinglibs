@@ -26,9 +26,7 @@
 #include <iostream>
 #include <mutex>
 #include <numeric>
-#include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace coro_io::urma_benchmark_profile {
@@ -180,9 +178,6 @@ struct thread_samples {
              static_cast<std::size_t>(stage::count)>
       samples;
   std::array<uint32_t, static_cast<std::size_t>(stage::count)> counters{};
-  // Separate func-name keyed samples for benchmark_rpc_call only.
-  std::unordered_map<std::string, std::vector<uint64_t>> rpc_call_by_name;
-  std::unordered_map<std::string, uint32_t> rpc_call_name_counters;
   ~thread_samples();
 };
 
@@ -203,19 +198,6 @@ merged_samples() {
 inline std::array<uint32_t, static_cast<std::size_t>(stage::count)>&
 merged_counters() {
   static std::array<uint32_t, static_cast<std::size_t>(stage::count)> value{};
-  return value;
-}
-
-// Global merged func-name samples for benchmark_rpc_call.
-inline std::unordered_map<std::string, std::vector<uint64_t>>&
-merged_rpc_call_by_name() {
-  static std::unordered_map<std::string, std::vector<uint64_t>> value;
-  return value;
-}
-
-inline std::unordered_map<std::string, uint32_t>&
-merged_rpc_call_name_counters() {
-  static std::unordered_map<std::string, uint32_t> value;
   return value;
 }
 
@@ -247,16 +229,6 @@ inline thread_samples::~thread_samples() {
       samples[s][b].clear();
     }
   }
-  // Merge func-name keyed rpc_call data.
-  auto& dst_names = merged_rpc_call_by_name();
-  auto& dst_name_cnt = merged_rpc_call_name_counters();
-  for (auto& [name, vec] : rpc_call_by_name) {
-    dst_name_cnt[name] += rpc_call_name_counters[name];
-    dst_names[name].insert(dst_names[name].end(), vec.begin(), vec.end());
-    vec.clear();
-  }
-  rpc_call_by_name.clear();
-  rpc_call_name_counters.clear();
   auto& reg = registry();
   reg.erase(std::remove(reg.begin(), reg.end(), this), reg.end());
 }
@@ -275,28 +247,6 @@ inline void record_with_size(stage stage_id, uint64_t duration_ns,
 
 inline void record(stage stage_id, uint64_t duration_ns) {
   record_with_size(stage_id, duration_ns, 0);
-}
-
-inline void record_rpc_call_by_name(std::string_view func_name,
-                                    uint64_t duration_ns) {
-  if (!enabled()) return;
-  auto& local = local_samples();
-  auto rate = sample_rate_value().load(std::memory_order_relaxed);
-  // Also increment the stage counter so has() returns true for print().
-  auto s = static_cast<std::size_t>(stage::benchmark_rpc_call);
-  ++local.counters[s];
-  std::string name(func_name);
-  auto counter = ++local.rpc_call_name_counters[name];
-  if ((counter % rate) != 0) return;
-  local.rpc_call_by_name[name].push_back(duration_ns);
-}
-
-inline void record_rpc_call_by_name_since(std::string_view func_name,
-                                          uint64_t begin_ns) {
-  if (!enabled()) return;
-  auto end_ns = now_ns();
-  if (end_ns >= begin_ns)
-    record_rpc_call_by_name(func_name, end_ns - begin_ns);
 }
 
 inline void record_since(stage stage_id, uint64_t begin_ns) {
@@ -445,67 +395,8 @@ inline void print(std::ostream& os) {
   // ── Benchmark ──
   if (has(static_cast<std::size_t>(stage::benchmark_rpc_call))) {
     os << "\n[benchmark]\n";
-    // Compute total stats from func-name data
-    {
-      std::lock_guard<std::mutex> lock(registry_mutex());
-      std::unordered_map<std::string, std::vector<uint64_t>> all_names;
-      for (auto& [name, vec] : merged_rpc_call_by_name())
-        all_names[name].insert(all_names[name].end(), vec.begin(), vec.end());
-      for (auto* thread : registry()) {
-        if (!thread) continue;
-        for (auto& [name, vec] : thread->rpc_call_by_name)
-          all_names[name].insert(all_names[name].end(), vec.begin(), vec.end());
-      }
-      // Print total line
-      std::vector<uint64_t> all;
-      std::size_t total_calls = 0;
-      for (auto& [name, vec] : all_names) {
-        all.insert(all.end(), vec.begin(), vec.end());
-        total_calls += merged_rpc_call_name_counters()[name];
-      }
-      for (auto* thread : registry()) {
-        if (!thread) continue;
-        for (auto& [name, cnt] : thread->rpc_call_name_counters)
-          total_calls += cnt;
-      }
-      if (!all.empty()) {
-        std::sort(all.begin(), all.end());
-        auto sum = std::accumulate(all.begin(), all.end(), 0LL);
-        auto avg = static_cast<double>(sum) / all.size() / 1000.0;
-        auto pct = [&](double p) {
-          return static_cast<double>(all[static_cast<std::size_t>((all.size()-1)*p)]) / 1000.0;
-        };
-        os << "rpc_call (total)"
-           << " calls=" << total_calls
-           << " n=" << std::right << std::setw(8) << all.size()
-           << " avg=" << std::setw(10) << avg
-           << " p50=" << std::setw(10) << pct(0.50)
-           << " p90=" << std::setw(10) << pct(0.90)
-           << " p99=" << std::setw(10) << pct(0.99)
-           << " p999=" << std::setw(10) << pct(0.999)
-           << " max=" << std::setw(10)
-           << static_cast<double>(all.back()) / 1000.0 << "\n";
-      }
-      // Print per-func-name breakdown
-      for (auto& [name, vec] : all_names) {
-        if (vec.empty()) continue;
-        std::sort(vec.begin(), vec.end());
-        auto sum = std::accumulate(vec.begin(), vec.end(), 0LL);
-        auto avg = static_cast<double>(sum) / vec.size() / 1000.0;
-        auto pct = [&](double p) {
-          return static_cast<double>(vec[static_cast<std::size_t>((vec.size()-1)*p)]) / 1000.0;
-        };
-        os << "  " << std::left << std::setw(28) << name
-           << " n=" << std::right << std::setw(8) << vec.size()
-           << " avg=" << std::setw(10) << avg
-           << " p50=" << std::setw(10) << pct(0.50)
-           << " p90=" << std::setw(10) << pct(0.90)
-           << " p99=" << std::setw(10) << pct(0.99)
-           << " p999=" << std::setw(10) << pct(0.999)
-           << " max=" << std::setw(10)
-           << static_cast<double>(vec.back()) / 1000.0 << "\n";
-      }
-    }
+    parent(0, true, "rpc_call (total)", st(stage::benchmark_rpc_call));
+    buckets(1, stage::benchmark_rpc_call);
   }
 
   // ── Client ──
