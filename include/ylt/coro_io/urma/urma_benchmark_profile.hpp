@@ -282,6 +282,9 @@ inline void record_rpc_call_by_name(std::string_view func_name,
   if (!enabled()) return;
   auto& local = local_samples();
   auto rate = sample_rate_value().load(std::memory_order_relaxed);
+  // Also increment the stage counter so has() returns true for print().
+  auto s = static_cast<std::size_t>(stage::benchmark_rpc_call);
+  ++local.counters[s];
   std::string name(func_name);
   auto counter = ++local.rpc_call_name_counters[name];
   if ((counter % rate) != 0) return;
@@ -442,11 +445,9 @@ inline void print(std::ostream& os) {
   // ── Benchmark ──
   if (has(static_cast<std::size_t>(stage::benchmark_rpc_call))) {
     os << "\n[benchmark]\n";
-    parent(0, true, "rpc_call (total)", st(stage::benchmark_rpc_call));
-    // Print per-func-name breakdown
+    // Compute total stats from func-name data
     {
       std::lock_guard<std::mutex> lock(registry_mutex());
-      // Merge live thread data + already-merged data
       std::unordered_map<std::string, std::vector<uint64_t>> all_names;
       for (auto& [name, vec] : merged_rpc_call_by_name())
         all_names[name].insert(all_names[name].end(), vec.begin(), vec.end());
@@ -455,6 +456,37 @@ inline void print(std::ostream& os) {
         for (auto& [name, vec] : thread->rpc_call_by_name)
           all_names[name].insert(all_names[name].end(), vec.begin(), vec.end());
       }
+      // Print total line
+      std::vector<uint64_t> all;
+      std::size_t total_calls = 0;
+      for (auto& [name, vec] : all_names) {
+        all.insert(all.end(), vec.begin(), vec.end());
+        total_calls += merged_rpc_call_name_counters()[name];
+      }
+      for (auto* thread : registry()) {
+        if (!thread) continue;
+        for (auto& [name, cnt] : thread->rpc_call_name_counters)
+          total_calls += cnt;
+      }
+      if (!all.empty()) {
+        std::sort(all.begin(), all.end());
+        auto sum = std::accumulate(all.begin(), all.end(), 0LL);
+        auto avg = static_cast<double>(sum) / all.size() / 1000.0;
+        auto pct = [&](double p) {
+          return static_cast<double>(all[static_cast<std::size_t>((all.size()-1)*p)]) / 1000.0;
+        };
+        os << "rpc_call (total)"
+           << " calls=" << total_calls
+           << " n=" << std::right << std::setw(8) << all.size()
+           << " avg=" << std::setw(10) << avg
+           << " p50=" << std::setw(10) << pct(0.50)
+           << " p90=" << std::setw(10) << pct(0.90)
+           << " p99=" << std::setw(10) << pct(0.99)
+           << " p999=" << std::setw(10) << pct(0.999)
+           << " max=" << std::setw(10)
+           << static_cast<double>(all.back()) / 1000.0 << "\n";
+      }
+      // Print per-func-name breakdown
       for (auto& [name, vec] : all_names) {
         if (vec.empty()) continue;
         std::sort(vec.begin(), vec.end());
@@ -463,7 +495,7 @@ inline void print(std::ostream& os) {
         auto pct = [&](double p) {
           return static_cast<double>(vec[static_cast<std::size_t>((vec.size()-1)*p)]) / 1000.0;
         };
-        os << "    " << std::left << std::setw(28) << name
+        os << "  " << std::left << std::setw(28) << name
            << " n=" << std::right << std::setw(8) << vec.size()
            << " avg=" << std::setw(10) << avg
            << " p50=" << std::setw(10) << pct(0.50)
