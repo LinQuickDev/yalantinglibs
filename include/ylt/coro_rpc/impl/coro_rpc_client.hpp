@@ -1877,6 +1877,18 @@ class coro_rpc_client {
     assert(config.request_timeout_duration.has_value());
 
     control_->last_func_name = std::string(get_func_name<func>());
+    if (control_->last_func_name.empty()) {
+#if defined(__GNUC__) || defined(__clang__)
+      std::string_view pretty = __PRETTY_FUNCTION__;
+      auto pos = pretty.rfind("::");
+      if (pos != std::string_view::npos)
+        control_->last_func_name = std::string(pretty.substr(pos + 2));
+      else
+        control_->last_func_name = std::string(pretty);
+#else
+      control_->last_func_name = "rpc_call";
+#endif
+    }
     auto timer = std::make_unique<coro_io::period_timer>(
         control_->executor_->get_asio_executor());
     auto result = co_await control_->socket_wrapper_.visit([&](auto &socket) {
