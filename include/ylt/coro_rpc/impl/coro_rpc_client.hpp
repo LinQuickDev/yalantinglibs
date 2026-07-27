@@ -1766,11 +1766,11 @@ class coro_rpc_client {
       async_simple::Future<async_rpc_raw_result> future,
       std::weak_ptr<control_t> watcher, recving_guard guard,
       uint64_t client_id, uint64_t rpc_begin = 0) {
-    auto record_rpc = [&]() {
+    auto record_rpc = [&](std::size_t payload_size = 0) {
       if (rpc_begin)
-        coro_io::urma_benchmark_profile::record_since(
+        coro_io::urma_benchmark_profile::record_since_with_size(
             coro_io::urma_benchmark_profile::stage::benchmark_rpc_call,
-            rpc_begin);
+            rpc_begin, payload_size);
     };
     auto ret_ = co_await std::move(future);
     guard.release();
@@ -1798,7 +1798,7 @@ class coro_rpc_client {
     coro_io::urma_benchmark_profile::record_since_with_size(
         coro_io::urma_benchmark_profile::stage::client_deserialize_response,
         deser_begin, ret.buffer_.read_buf_.size());
-    record_rpc();
+    record_rpc(ret.buffer_.read_buf_.size() + ret.attachment.size());
     if (has_error) {
       if (auto w = watcher.lock(); w) {
         close_socket_async(std::move(w));
