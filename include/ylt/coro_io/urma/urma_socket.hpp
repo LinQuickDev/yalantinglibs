@@ -207,7 +207,7 @@ struct urma_socket_shared_state_t
     jetty_cfg.jfs_cfg.depth =
         static_cast<uint32_t>(send_buffer_cnt + 2);
     jetty_cfg.jfs_cfg.trans_mode = URMA_TM_RM;
-    jetty_cfg.jfs_cfg.priority = URMA_MAX_PRIORITY;
+    jetty_cfg.jfs_cfg.priority = 6;
     jetty_cfg.jfs_cfg.max_sge = 1;
     jetty_cfg.jfs_cfg.rnr_retry = URMA_TYPICAL_RNR_RETRY;
     jetty_cfg.jfs_cfg.err_timeout = URMA_TYPICAL_ERR_TIMEOUT;
