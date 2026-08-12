@@ -25,9 +25,6 @@
 #include "ylt/easylog.hpp"
 #include "ylt/coro_io/urma/urma_buffer.hpp"
 
-// urma_ubagg.h is included unconditionally (matching urma_socket.hpp) so the
-// bond_mode/bond_level enum constants used in urma_init_config_t defaults and
-// the device member defaults are visible even in non-URMA builds.
 #include "ylt/urma/urma_ubagg.h"
 
 #ifdef YLT_ENABLE_URMA
@@ -38,8 +35,6 @@ namespace coro_io {
 
 class urma_buffer_pool_t;
 
-// URMA Device abstraction - wrapper around URMA library's ::urma_device_t
-// Note: Using ::urma_device_t to explicitly refer to the URMA library type
 class urma_device_wrapper_t {
  public:
   urma_device_wrapper_t();
@@ -74,9 +69,6 @@ class urma_device_wrapper_t {
   bool is_valid() const { return context_ != nullptr && device_ptr_ != nullptr; }
   std::shared_ptr<urma_buffer_pool_t> get_buffer_pool() const { return buffer_pool_; }
 
-  // Set bonding mode/level before init(). Takes effect only for bonding devices
-  // (dev name starting with "bonding"). Must be called before init() so that the
-  // urma_user_ctl(SET_BONDING_MODE) ioctl runs while context refcount==1.
   void set_bonding_config(uint32_t mode, uint32_t level) {
     bond_mode_ = mode;
     bond_level_ = level;
@@ -94,30 +86,22 @@ class urma_device_wrapper_t {
   uint32_t bond_level_ = BONDP_BONDING_LEVEL_IODIE;
 };
 
-// Backward compatibility alias
 using urma_device_t = urma_device_wrapper_t;
 
-// URMA buffer pool configuration
 struct urma_buffer_pool_config_t {
   uint32_t buffer_size = 4 * 1024;             // buffer size
   uint64_t max_memory_usage = 20 * 1024 * 1024;  // max memory usage
   std::chrono::seconds idle_timeout{5};        // idle timeout
 };
 
-// URMA initialization configuration
 struct urma_init_config_t {
   std::string dev_name;                        // device name, empty for auto-select
   urma_buffer_pool_config_t buffer_pool_config;  // buffer pool config
   int eid_index = 0;                           // EID index to use
-  // Bonding device mode/level. Defaults match urma_perftest (STANDALONE + IODIE),
-  // which enables a single primary-EID device and avoids CTP cross-port spray
-  // causing first-SEND RNR (status=10) under the default STANDALONE+PORT level.
-  // Only applied when dev_name starts with "bonding".
   uint32_t bond_mode = BONDP_BONDING_MODE_STANDALONE;
   uint32_t bond_level = BONDP_BONDING_LEVEL_IODIE;
 };
 
-// Global device management
 class urma_device_manager {
  public:
   static urma_device_manager& instance();
@@ -146,8 +130,6 @@ inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
              << ", eid_index=" << config.eid_index
              << ", bond_mode=" << config.bond_mode
              << ", bond_level=" << config.bond_level << ") called";
-  // Use the config overload so bond_mode/bond_level are applied during init()
-  // (before any resource creation, while context refcount==1).
   auto device = urma_device_manager::instance().get_device(config);
   if (device) {
     device->configure_buffer_pool(config.buffer_pool_config.buffer_size,
@@ -155,8 +137,6 @@ inline std::shared_ptr<urma_device_wrapper_t> get_global_urma_device(
   }
   return device;
 }
-
-// ============= Implementation (inline in header) =============
 
 inline urma_device_wrapper_t::urma_device_wrapper_t() = default;
 
@@ -194,7 +174,6 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
   eid_index_ = eid_index;
 
   int num_devices = 0;
-  // Use :: to explicitly call URMA library function
   ::urma_device_t** devices = urma_get_device_list(&num_devices);
   if (!devices || num_devices <= 0) {
     ELOG_ERROR << "urma_get_device_list failed";
