@@ -37,6 +37,23 @@ cmake -S . -B build -DYLT_ENABLE_URMA=ON -DBUILD_EXAMPLES=ON
 cmake --build build --target coro_rpc_urma_example -j
 ```
 
+CMake 从 `URMA_ROOT`、`/usr/include` 和 `/usr/local/include` 查找 UMDK
+头文件，支持 `urma/`、`umdk/urma/` 和 UMDK 源码目录布局。例如：
+
+```bash
+cmake -S . -B build -DYLT_ENABLE_URMA=ON \
+  -DURMA_ROOT=/opt/umdk
+```
+
+也可以通过环境变量指定：
+
+```bash
+export URMA_ROOT=/opt/umdk
+```
+
+配置必须同时包含 `urma_api.h` 和 bonding 扩展头 `urma_ubagg.h`，并在启用
+URMA 时链接系统 `liburma`。
+
 ```cpp
 coro_rpc_server server(std::thread::hardware_concurrency(), 9000);
 server.init_urma();
@@ -112,7 +129,7 @@ export URMA_RPC_EID_INDEX=0
 | 本地内存 | `urma_register_seg` | 注册 URMA 可访问内存 |
 | 数据收发 | `urma_post_jetty_send_wr`、`urma_post_jetty_recv_wr` | 提交 work request |
 
-典型顺序是：创建 context → 创建 JFC/JFCE 和 Jetty → 注册 Segment → 交换元数据 → 导入对端资源 → post WR → poll/wait completion → 释放资源。声明位于 `include/ylt/urma/urma_api.h` 和 `urma_types.h`。
+典型顺序是：创建 context → 创建 JFC/JFCE 和 Jetty → 注册 Segment → 交换元数据 → 导入对端资源 → post WR → poll/wait completion → 释放资源。声明来自外部 UMDK 的 `urma_api.h` 和 `urma_types.h`。
 
 ## 6. 大数据与压测
 
@@ -137,4 +154,4 @@ cmake --build build --target coro_rpc_urma_benchmark -j
 - 高并发下出现 RNR 或 `WR_FLUSH_ERR`：降低连接数、pipeline depth、队列深度，或增加内存上限。
 - 定位延迟：启用 benchmark 的 `--profile`，观察握手、post send、completion wait、RPC dispatch 和 attachment 阶段。
 
-示例：`src/coro_rpc/examples/urma_example/urma_example.cpp`；实现：`include/ylt/coro_io/urma/`；公共 API：`include/ylt/urma/`。
+示例：`src/coro_rpc/examples/urma_example/urma_example.cpp`；实现：`include/ylt/coro_io/urma/`；公共 API 来自 UMDK 的 `urma_api.h`、`urma_types.h` 和 `urma_ubagg.h`。

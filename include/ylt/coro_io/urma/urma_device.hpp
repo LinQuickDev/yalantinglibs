@@ -25,10 +25,10 @@
 #include "ylt/easylog.hpp"
 #include "ylt/coro_io/urma/urma_buffer.hpp"
 
-#include "ylt/urma/urma_ubagg.h"
+#include <urma_ubagg.h>
 
 #ifdef YLT_ENABLE_URMA
-#include "ylt/urma/urma_api.h"
+#include <urma_api.h>
 #endif
 
 namespace coro_io {

@@ -46,8 +46,8 @@
 #include "ylt/coro_io/urma/urma_device.hpp"
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack.hpp"
-#include "ylt/urma/urma_api.h"
-#include "ylt/urma/urma_ubagg.h"
+#include <urma_api.h>
+#include <urma_ubagg.h>
 
 #include <fcntl.h>
 #include <unistd.h>
