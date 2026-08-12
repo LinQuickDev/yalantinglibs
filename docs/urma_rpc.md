@@ -1,17 +1,37 @@
-# URMA RPC 使用说明
+# URMA RPC
 
-URMA 是 `coro_rpc` 的可选传输层。使用前请确认运行环境已安装 URMA 用户态库、头文件和对应驱动。
+本文介绍 `coro_rpc` 的 URMA 传输层、自动升级机制、配置方式和底层接口。URMA 是可选功能；未启用或初始化失败时，`coro_rpc` 继续使用 TCP。
 
-## 构建
+## 1. 架构与连接流程
+
+URMA RPC 由三层组成：
+
+1. `coro_rpc`：负责 RPC 编解码、handler、连接管理和 attachment。
+2. `coro_io::urma_socket_t`：负责 TCP 握手、URMA Jetty 建链、收发队列和完成事件。
+3. URMA 资源层：负责设备、context、JFC/JFCE、Jetty、Segment 和 work request。
+
+连接建立先使用 TCP 交换 EID、UASID、Jetty ID 和 buffer pool segment；随后双方导入对端资源，数据面切换到 URMA。TCP 只用于握手。
+
+```text
+coro_rpc client/server
+        |
+        v
+urma_socket_t -- TCP handshake --> peer metadata
+        |
+        +-- device/context, JFC/JFCE, Jetty
+        +-- registered buffer pool segment
+        v
+URMA send/receive work requests -> completion polling/event loop
+```
+
+buffer pool 将一块连续内存注册为 Segment，再切分为固定大小的 buffer，减少重复注册开销。发送窗口受本地发送 buffer 数和对端接收 buffer 数共同限制。
+
+## 2. 构建与显式启用
 
 ```bash
 cmake -S . -B build -DYLT_ENABLE_URMA=ON -DBUILD_EXAMPLES=ON
 cmake --build build --target coro_rpc_urma_example -j
 ```
-
-## 最小示例
-
-服务端：
 
 ```cpp
 coro_rpc_server server(std::thread::hardware_concurrency(), 9000);
@@ -20,22 +40,16 @@ server.register_handler<echo>();
 server.start();
 ```
 
-客户端在连接前初始化 URMA：
-
 ```cpp
 coro_rpc_client client;
 if (!client.init_urma()) {
-  return;
+  co_return;
 }
 auto ec = co_await client.connect("127.0.0.1:9000");
 auto result = co_await client.call_for<echo>(30s, "hello urma");
 ```
 
-不调用 `init_urma()` 时，`coro_rpc` 默认使用 TCP。
-
-## 配置
-
-服务端和客户端可以传入同一个 `coro_io::urma_socket_t::config_t`：
+## 3. 配置
 
 ```cpp
 coro_io::urma_socket_t::config_t config{
@@ -53,41 +67,70 @@ server.init_urma(config);
 client.init_urma(config);
 ```
 
-`device_name` 为空时自动选择设备。`buffer_size`、队列深度和内存上限应根据设备能力及并发量设置；CTP 场景通常使用 4 KiB 分片。
+## 4. 环境变量自动升级
 
-## 大数据与压测
+默认 TCP 配置下，设置 `URMA_RPC_ENABLE=1` 可自动探测 URMA 设备并升级：
 
-大 payload 建议使用 RPC attachment，避免把数据重复放入普通 RPC 参数：
+```bash
+export URMA_RPC_ENABLE=1
+export URMA_RPC_DEVICE=bonding_dev_0
+export URMA_RPC_EID_INDEX=0
+```
+
+`URMA_RPC_ENABLE` 接受 `1`、`on`、`true`、`yes`。未设置、关闭或设备探测失败时回退 TCP。显式调用 `init_urma(config)` 的配置优先。
+
+| 变量 | 作用 |
+| --- | --- |
+| `URMA_RPC_ENABLE` | 启用自动升级 |
+| `URMA_RPC_DEVICE` | 设备名；为空时自动选择 |
+| `URMA_RPC_EID_INDEX` | EID 下标，默认 `0` |
+| `URMA_RPC_CQ_SIZE` | completion queue 大小 |
+| `URMA_RPC_RECV_BUFFER_CNT` / `URMA_RPC_SEND_BUFFER_CNT` | 收发 buffer 数 |
+| `URMA_RPC_BUFFER_SIZE` | 单个 buffer 大小 |
+| `URMA_RPC_MAX_MEMORY_USAGE` | buffer pool 上限，单位 byte |
+| `URMA_RPC_TP_TYPE` | `ctp`、`rtp` 或其他支持的类型 |
+| `URMA_RPC_EVENT_MODE` | JFCE 事件模式开关 |
+| `URMA_RPC_BUSY_POLL_BUDGET` | 事件唤醒后的忙轮询次数 |
+| `URMA_RPC_POLL_INTERVAL` | 轮询间隔，单位微秒 |
+
+实现位于 `include/ylt/coro_io/urma/urma_rpc_env.hpp`，行为测试位于 `src/coro_rpc/tests/test_urma_rpc_env.cpp`。
+
+## 5. URMA 接口
+
+| 层次 | 主要接口 | 作用 |
+| --- | --- | --- |
+| 生命周期 | `urma_init`、`urma_uninit` | 初始化和释放 runtime |
+| 设备 | `urma_get_device_list`、`urma_get_eid_list`、`urma_query_device` | 查询设备、EID 和能力 |
+| Context | `urma_create_context`、`urma_delete_context` | 创建设备上下文 |
+| 完成队列 | `urma_create_jfc`、`urma_create_jfce`、`urma_poll_jfc`、`urma_wait_jfc` | 等待并读取完成记录 |
+| 数据队列 | `urma_create_jfs`、`urma_create_jfr`、`urma_create_jetty` | 创建收发资源 |
+| 远端资源 | `urma_import_seg`、`urma_import_jetty` | 导入对端 Segment 和 Jetty |
+| 本地内存 | `urma_register_seg` | 注册 URMA 可访问内存 |
+| 数据收发 | `urma_post_jetty_send_wr`、`urma_post_jetty_recv_wr` | 提交 work request |
+
+典型顺序是：创建 context → 创建 JFC/JFCE 和 Jetty → 注册 Segment → 交换元数据 → 导入对端资源 → post WR → poll/wait completion → 释放资源。声明位于 `include/ylt/urma/urma_api.h` 和 `urma_types.h`。
+
+## 6. 大数据与压测
+
+大 payload 建议使用 attachment：
 
 ```cpp
 client.set_req_attachment(payload);
 auto result = co_await client.call_for<upload>(30s, payload.size());
 ```
 
-构建压测工具：
-
 ```bash
 cmake --build build --target coro_rpc_urma_benchmark -j
 ```
 
-运行服务端和客户端：
+详细参数见 [`urma_benchmark/README.md`](../src/coro_rpc/examples/urma_benchmark/README.md)。`--transport raw` 用于排除 RPC 编解码开销，`--rpc attach_sink` 用于测试 attachment 快路径。
 
-```bash
-./build/output/examples/coro_rpc/coro_rpc_urma_benchmark server \
-  --host 0.0.0.0 --port 9001 --device bonding_dev_0
+## 7. 排障
 
-./build/output/examples/coro_rpc/coro_rpc_urma_benchmark client \
-  --host <server-ip> --port 9001 --device bonding_dev_0 \
-  --mode both --payload 64 --connections 128 --duration 30
-```
+- 没有 URMA 目标：确认使用 `-DYLT_ENABLE_URMA=ON`，并安装匹配的库、头文件和驱动。
+- 自动升级未生效：确认 `URMA_RPC_ENABLE` 有效，且应用走默认 TCP 配置路径。
+- 初始化或连接失败：检查设备名、EID、TP 类型和 TCP 握手端口。
+- 高并发下出现 RNR 或 `WR_FLUSH_ERR`：降低连接数、pipeline depth、队列深度，或增加内存上限。
+- 定位延迟：启用 benchmark 的 `--profile`，观察握手、post send、completion wait、RPC dispatch 和 attachment 阶段。
 
-需要排除 RPC 开销时使用 `--transport raw`；需要测试 attachment 快路径时使用 `--rpc attach_sink`。
-
-## 排查
-
-- 找不到 URMA 目标：确认重新执行了带 `-DYLT_ENABLE_URMA=ON` 的 CMake 配置。
-- 初始化失败：检查设备名、EID、驱动和用户态库是否匹配。
-- 连接失败：确认 TCP 握手端口可达，且两端都已调用 `init_urma()`。
-- 高并发下出现发送或接收错误：降低连接数、pipeline depth 或队列深度，并适当增加内存上限。
-
-完整示例见 `src/coro_rpc/examples/urma_example/urma_example.cpp`，压测参数以 `src/coro_rpc/examples/urma_benchmark/urma_benchmark.cpp` 为准。
+示例：`src/coro_rpc/examples/urma_example/urma_example.cpp`；实现：`include/ylt/coro_io/urma/`；公共 API：`include/ylt/urma/`。
