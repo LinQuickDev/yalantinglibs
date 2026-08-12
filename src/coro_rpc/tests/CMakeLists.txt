@@ -14,8 +14,11 @@ set(TEST_SRCS
         test_abi_compatible.cpp
         test_urma_rpc_env.cpp
         )
+if(YLT_ENABLE_ND)
+        list(APPEND TEST_SRCS test_networkdirect_rpc.cpp)
+endif()
 if (YLT_ENABLE_IBV AND YLT_ENABLE_CUDA)
-        set(TEST_SRC ${TEST_SRCS} test_gdr.cpp)
+        list(APPEND TEST_SRCS test_gdr.cpp)
 endif()
 if (YLT_ENABLE_SSL)
         set(TEST_SRCS
@@ -44,6 +47,9 @@ add_custom_command(
         ${CMAKE_BINARY_DIR}/output/openssl_files)
 target_compile_definitions(coro_rpc_test PRIVATE UNIT_TEST_INJECT)
 target_compile_definitions(coro_rpc_test PRIVATE STRUCT_PACK_ENABLE_UNPORTABLE_TYPE)
+if(YLT_ENABLE_ND)
+  target_link_libraries(coro_rpc_test PRIVATE ws2_32 mswsock)
+endif()
 
 add_test(NAME coro_rpc_test COMMAND coro_rpc_test)
 

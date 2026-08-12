@@ -62,7 +62,18 @@ class basic_static_histogram : public static_metric {
   void serialize(std::string &str) override {
     auto val = sum_->value();
 
-    if (val == 0) {
+    // Gate on observations (count > 0), not on sum: a histogram whose
+    // observations are all zero-valued (e.g. sub-microsecond latencies
+    // truncated to int64_t 0) still has a meaningful count and bucket
+    // distribution. Using sum==0 as "empty" silently drops real signal.
+    bool has_observations = false;
+    for (const auto &counter : bucket_counts_) {
+      if (counter->value() != 0) {
+        has_observations = true;
+        break;
+      }
+    }
+    if (!has_observations) {
       return;
     }
 
@@ -103,7 +114,16 @@ class basic_static_histogram : public static_metric {
 #ifdef CINATRA_ENABLE_METRIC_JSON
   void serialize_to_json(std::string &str) override {
     auto val = sum_->value();
-    if (val == 0) {
+
+    // Gate on observations (count > 0), not on sum — see serialize().
+    bool has_observations = false;
+    for (const auto &counter : bucket_counts_) {
+      if (counter->value() != 0) {
+        has_observations = true;
+        break;
+      }
+    }
+    if (!has_observations) {
       return;
     }
 
@@ -236,16 +256,27 @@ class basic_dynamic_histogram : public dynamic_metric {
 
     serialize_head(str);
 
-    std::string value_str;
     auto bucket_counts = get_bucket_counts();
     for (auto &e : value_map) {
       auto &labels_value = e->label;
       auto &value = e->value;
-      if (value == 0) {
+
+      // Gate per-label-combo on observations (count > 0), not on sum:
+      // a label combo observed with only zero-valued samples (e.g.
+      // sub-microsecond latencies truncated to int64_t 0) still has a
+      // meaningful count and bucket distribution. A non-empty value_map
+      // entry implies observe() was called, which always increments a
+      // bucket counter alongside sum_.
+      value_type total_count = 0;
+      for (size_t i = 0; i < bucket_counts.size(); i++) {
+        total_count += bucket_counts[i]->value(labels_value);
+      }
+      if (total_count == 0) {
         continue;
       }
 
       value_type count = 0;
+      std::string value_str;
       for (size_t i = 0; i < bucket_counts.size(); i++) {
         auto counter = bucket_counts[i];
         value_str.append(name_).append("_bucket{");
@@ -288,9 +319,6 @@ class basic_dynamic_histogram : public dynamic_metric {
       str.append(std::to_string(count));
       str.append("\n");
     }
-    if (value_str.empty()) {
-      str.clear();
-    }
   }
 
 #ifdef CINATRA_ENABLE_METRIC_JSON
@@ -305,8 +333,14 @@ class basic_dynamic_histogram : public dynamic_metric {
 
     for (auto &e : value_map) {
       auto &labels_value = e->label;
-      auto &value = e->value;
-      if (value == 0) {
+
+      // Gate per-label-combo on observations (count > 0), not on sum —
+      // see serialize().
+      size_t total_count = 0;
+      for (size_t i = 0; i < bucket_counts.size(); i++) {
+        total_count += bucket_counts[i]->value(labels_value);
+      }
+      if (total_count == 0) {
         continue;
       }
 

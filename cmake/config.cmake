@@ -72,10 +72,10 @@ if (YLT_ENABLE_IBV)
     message(STATUS "Enable ibverbs support")
     if(CMAKE_PROJECT_NAME STREQUAL "yaLanTingLibs")
         add_compile_definitions("YLT_ENABLE_IBV")
-        link_libraries(-libverbs)
+        link_libraries(-libverbs -lmlx5)
     else ()
         target_compile_definitions(${ylt_target_name} INTERFACE "YLT_ENABLE_IBV")
-        target_link_libraries(${ylt_target_name} INTERFACE -libverbs)
+        target_link_libraries(${ylt_target_name} INTERFACE -libverbs -lmlx5)
     endif ()
 endif ()
 option(YLT_ENABLE_URMA "Enable URMA support" OFF)
@@ -100,6 +100,49 @@ if (YLT_ENABLE_CUDA)
         target_link_libraries(${ylt_target_name} INTERFACE CUDA::cuda_driver)
     endif ()
 endif()
+
+option(YLT_ENABLE_NVCOMP "Enable nvCOMP (CRC32 etc.) support" OFF)
+if (YLT_ENABLE_NVCOMP)
+    message(STATUS "Enable nvCOMP support")
+    # Paths must be provided explicitly. yum package nvcomp-cuda-<X> installs
+    # headers under /usr/include/nvcomp_<X>/ and lib as /usr/lib64/libnvcomp.so
+    # (the <X> suffix varies across CUDA major versions).
+    # Example:
+    #   cmake -DYLT_ENABLE_NVCOMP=ON \
+    #         -DNVCOMP_INCLUDE_DIR=/usr/include/nvcomp_12 \
+    #         -DNVCOMP_LIB=/usr/lib64/libnvcomp.so ...
+    if (NOT NVCOMP_INCLUDE_DIR OR NOT NVCOMP_LIB)
+        message(FATAL_ERROR
+            "YLT_ENABLE_NVCOMP=ON but NVCOMP_INCLUDE_DIR / NVCOMP_LIB are not set.\n"
+            "Install via 'yum install nvcomp-cuda-<X>' and pass:\n"
+            "  -DNVCOMP_INCLUDE_DIR=/usr/include/nvcomp_<X>\n"
+            "  -DNVCOMP_LIB=/usr/lib64/libnvcomp.so")
+    endif()
+    if(CMAKE_PROJECT_NAME STREQUAL "yaLanTingLibs")
+        add_compile_definitions("YLT_ENABLE_NVCOMP")
+        link_libraries(${NVCOMP_LIB})
+        include_directories(${NVCOMP_INCLUDE_DIR})
+    else ()
+        target_compile_definitions(${ylt_target_name} INTERFACE "YLT_ENABLE_NVCOMP")
+        target_link_libraries(${ylt_target_name} INTERFACE ${NVCOMP_LIB})
+        target_include_directories(${ylt_target_name} INTERFACE ${NVCOMP_INCLUDE_DIR})
+    endif ()
+endif()
+
+option(YLT_ENABLE_ND "Enable NetworkDirect support" OFF)
+message(STATUS "YLT_ENABLE_ND: ${YLT_ENABLE_ND}")
+if (YLT_ENABLE_ND)
+    if (NOT WIN32)
+        message(FATAL_ERROR "YLT_ENABLE_ND is only supported on Windows")
+    endif()
+    if(CMAKE_PROJECT_NAME STREQUAL "yaLanTingLibs")
+        add_compile_definitions("YLT_ENABLE_ND")
+        link_libraries(ws2_32 mswsock)
+    else ()
+        target_compile_definitions(${ylt_target_name} INTERFACE "YLT_ENABLE_ND")
+        target_link_libraries(${ylt_target_name} INTERFACE ws2_32 mswsock)
+    endif ()
+endif ()
 
 option(YLT_ENABLE_PMR "Enable pmr support" OFF)
 message(STATUS "YLT_ENABLE_PMR: ${YLT_ENABLE_PMR}")
@@ -156,4 +199,3 @@ if(YLT_ENABLE_STRUCT_PACK_OPTIMIZE)
     endif ()
 endif()
 message(STATUS "--------------------------------------------")
-

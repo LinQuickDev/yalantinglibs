@@ -278,7 +278,7 @@ class ib_device_t : public std::enable_shared_from_this<ib_device_t> {
     gid_index_ = conf.use_best_gid_index ? find_best_gid_index(conf.gid_index)
                                          : conf.gid_index;
 
-    ELOG_WARN << name_ << " Active MTU: " << detail::mtu_str(attr_.active_mtu)
+    ELOG_INFO << name_ << " Active MTU: " << detail::mtu_str(attr_.active_mtu)
               << ", "
               << "Max MTU: " << detail::mtu_str(attr_.max_mtu)
               << ", gid index: " << gid_index_;
@@ -343,6 +343,13 @@ class ib_device_t : public std::enable_shared_from_this<ib_device_t> {
   bool is_support_inline_data() const noexcept { return support_inline_data_; }
   void set_support_inline_data(bool flag) noexcept {
     support_inline_data_ = flag;
+  }
+
+  bool is_support_relaxed_ordering() const noexcept {
+    return support_relaxed_ordering_.load(std::memory_order_acquire);
+  }
+  void set_support_relaxed_ordering(bool flag) noexcept {
+    support_relaxed_ordering_.store(flag, std::memory_order_release);
   }
 
   std::shared_ptr<ib_buffer_pool_t> get_buffer_pool() const noexcept {
@@ -576,6 +583,7 @@ class ib_device_t : public std::enable_shared_from_this<ib_device_t> {
   std::unique_ptr<asio::posix::stream_descriptor> async_event_watcher_fd_;
   std::shared_ptr<ib_buffer_pool_t> buffer_pool_;
   std::atomic<bool> support_inline_data_ = true;
+  std::atomic<bool> support_relaxed_ordering_ = true;
   ibv_port_attr attr_;
   ibv_gid gid_;
   asio::ip::address gid_address_;

@@ -20,9 +20,14 @@
 #include "ibverbs/ib_io.hpp"
 #include "ibverbs/ib_socket.hpp"
 #endif
+
 #ifdef YLT_ENABLE_URMA
 #include "urma/urma_io.hpp"
 #include "urma/urma_socket.hpp"
+#endif
+#ifdef YLT_ENABLE_ND
+#include "ylt/coro_io/networkdirect/nd_io.hpp"
+#include "ylt/coro_io/networkdirect/nd_use_device.hpp"
 #endif
 #include "io_context_pool.hpp"
 namespace coro_io {
@@ -55,6 +60,7 @@ struct socket_wrapper_t {
     ib_socket_->prepare_accpet(std::move(soc));
   }
 #endif
+
 #ifdef YLT_ENABLE_URMA
   socket_wrapper_t(asio::ip::tcp::socket &&soc,
                    coro_io::ExecutorWrapper<> *executor,
@@ -63,6 +69,12 @@ struct socket_wrapper_t {
         urma_socket_(std::make_unique<urma_socket_t>(executor_, config)) {
     urma_socket_->prepare_accept(std::move(soc));
   }
+#endif
+#ifdef YLT_ENABLE_ND
+  socket_wrapper_t(coro_io::nd_socket_t &&soc,
+                   coro_io::ExecutorWrapper<> *executor)
+      : executor_(executor),
+        nd_socket_(std::make_unique<nd_socket_t>(std::move(soc))) {}
 #endif
   void init_tcp_socket() {
     asio::ip::address addr;
@@ -92,6 +104,7 @@ struct socket_wrapper_t {
       init_ok_ = false;
       return false;
     }
+    init_ok_ = true;
     return true;
   }
 #ifdef YLT_ENABLE_SSL
@@ -106,6 +119,7 @@ struct socket_wrapper_t {
       init_ok_ = false;
       return false;
     }
+    init_ok_ = true;
     return true;
   }
 #endif
@@ -118,6 +132,29 @@ struct socket_wrapper_t {
       }
       else {
         ib_socket_ = std::make_unique<ib_socket_t>(executor_, config);
+      }
+    } catch (const std::exception &e) {
+      ELOG_WARN << "init client failed:" << e.what();
+      init_ok_ = false;
+      return false;
+    }
+    init_ok_ = true;
+    return true;
+  }
+#endif
+#ifdef YLT_ENABLE_ND
+  bool init_client(const coro_io::nd_socket_t::config_t &config) {
+    try {
+      auto nd_config = config;
+      if (!init_nd_context(executor_, nd_config)) {
+        init_ok_ = false;
+        return false;
+      }
+      if (nd_socket_) {
+        *nd_socket_ = nd_socket_t(executor_, nd_config);
+      }
+      else {
+        nd_socket_ = std::make_unique<nd_socket_t>(executor_, nd_config);
       }
     } catch (const std::exception &e) {
       ELOG_WARN << "init client failed:" << e.what();
@@ -169,6 +206,32 @@ struct socket_wrapper_t {
   void set_local_ip(const std::string &local_ip) { local_ip_ = local_ip; }
 
  private:
+#ifdef YLT_ENABLE_ND
+  static bool init_nd_context(coro_io::ExecutorWrapper<> *executor,
+                              coro_io::nd_socket_t::config_t &config) {
+    if (!config.device) {
+      config.device =
+          coro_io::nd_device_manager_t::instance().get_first_available_device(
+              {});
+    }
+    if (!config.device) {
+      ELOG_WARN << "init NetworkDirect client failed: no available device";
+      return false;
+    }
+    coro_io::nd_config_t nd_config{};
+    nd_config.cqe_ = config.cq_size;
+    asio::error_code ec;
+    coro_io::use_device(static_cast<asio::io_context &>(executor->context()),
+                        config.device, nd_config, ec);
+    if (ec && ec != coro_io::make_error_code(
+                        coro_io::rdma_errc::already_registered)) {
+      ELOG_WARN << "init NetworkDirect client failed: " << ec.message();
+      return false;
+    }
+    return true;
+  }
+#endif
+
   std::unique_ptr<asio::ip::tcp::socket> socket_;
   coro_io::ExecutorWrapper<> *executor_;
   std::string local_ip_;
@@ -179,8 +242,12 @@ struct socket_wrapper_t {
 #ifdef YLT_ENABLE_IBV
   std::unique_ptr<ib_socket_t> ib_socket_;
 #endif
+
 #ifdef YLT_ENABLE_URMA
   std::unique_ptr<urma_socket_t> urma_socket_;
+#endif
+#ifdef YLT_ENABLE_ND
+  std::unique_ptr<nd_socket_t> nd_socket_;
 #endif
   bool init_ok_ = true;
 
@@ -204,6 +271,11 @@ struct socket_wrapper_t {
       return op(*urma_socket_);
     }
 #endif
+#ifdef YLT_ENABLE_ND
+    if (nd_socket_) {
+      return op(*nd_socket_);
+    }
+#endif
 #ifdef YLT_ENABLE_SSL
     if (use_ssl()) {
       return op(*ssl_stream_);
@@ -225,6 +297,12 @@ struct socket_wrapper_t {
 #ifdef YLT_ENABLE_URMA
     if (urma_socket_) {
       urma_socket_->close();
+      return;
+    }
+#endif
+#ifdef YLT_ENABLE_ND
+    if (nd_socket_) {
+      nd_socket_->close();
       return;
     }
 #endif
@@ -258,6 +336,12 @@ struct socket_wrapper_t {
     }
 #endif
 
+#ifdef YLT_ENABLE_ND
+    if (nd_socket_) {
+      return {nd_socket_->get_remote_address(), nd_socket_->get_remote_qp_num(),
+              coro_io::endpoint::rdma};
+    }
+#endif
     return {socket_->remote_endpoint().address(),
             socket_->remote_endpoint().port(), coro_io::endpoint::tcp};
   }
@@ -268,10 +352,17 @@ struct socket_wrapper_t {
               coro_io::endpoint::rdma};
     }
 #endif
+
 #ifdef YLT_ENABLE_URMA
     if (urma_socket_) {
       return {urma_socket_->get_local_address(),
               urma_socket_->get_local_qp_num(),
+              coro_io::endpoint::rdma};
+    }
+#endif
+#ifdef YLT_ENABLE_ND
+    if (nd_socket_) {
+      return {nd_socket_->get_local_address(), nd_socket_->get_local_qp_num(),
               coro_io::endpoint::rdma};
     }
 #endif
@@ -295,8 +386,8 @@ struct socket_wrapper_t {
     ssl_stream_ = std::make_unique<asio::ssl::stream<asio::ip::tcp::socket &>>(
         *socket_, ssl_ctx);
   }
-  std::unique_ptr<asio::ssl::stream<asio::ip::tcp::socket &>>
-      &ssl_stream() noexcept {
+  std::unique_ptr<asio::ssl::stream<asio::ip::tcp::socket &>> &
+  ssl_stream() noexcept {
     return ssl_stream_;
   }
   using tcp_socket_with_ssl_t = asio::ssl::stream<asio::ip::tcp::socket &>;
@@ -306,6 +397,9 @@ struct socket_wrapper_t {
 #endif
 #ifdef YLT_ENABLE_URMA
   using urma_socket_type = coro_io::urma_socket_t;
+#endif
+#ifdef YLT_ENABLE_ND
+  using nd_socket_t = coro_io::nd_socket_t;
 #endif
 };
 }  // namespace coro_io
