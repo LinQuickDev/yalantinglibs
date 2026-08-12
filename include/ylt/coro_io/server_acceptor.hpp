@@ -126,9 +126,14 @@ struct tcp_server_acceptor : public server_acceptor_base {
       else {
         ELOG_ERROR << "accept error: " << error.message();
       }
+
       if (error == asio::error::operation_aborted ||
           error == asio::error::bad_descriptor) {
+        ELOG_DEBUG << "accept stopped: " << error.message();
         acceptor_close_waiter_.set_value();
+      }
+      else {
+        ELOG_ERROR << "accept error: " << error.message();
       }
       co_return ylt::expected<coro_io::socket_wrapper_t, std::error_code>{
           ylt::unexpected<std::error_code>{error}};

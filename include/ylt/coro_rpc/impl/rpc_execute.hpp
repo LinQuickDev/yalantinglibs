@@ -25,6 +25,7 @@
 
 #include "context.hpp"
 #include "coro_connection.hpp"
+#include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
 #include "ylt/coro_rpc/impl/errno.h"
 #include "ylt/easylog.hpp"
 #include "ylt/struct_pack/compatible.hpp"
@@ -79,6 +80,9 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
 
     bool is_ok = true;
     constexpr size_t size = std::tuple_size_v<decltype(args)>;
+    auto deser_begin = coro_io::urma_benchmark_profile::enabled()
+                           ? coro_io::urma_benchmark_profile::now_ns()
+                           : 0;
     if constexpr (size > 0) {
       is_ok = serialize_proto::deserialize_to(args, data);
     }
@@ -105,11 +109,16 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
         }
       }
     }
+    coro_io::urma_benchmark_profile::record_since_with_size(
+        coro_io::urma_benchmark_profile::stage::server_deserialize_request,
+        deser_begin, data.size());
 
+    auto exec_begin = coro_io::urma_benchmark_profile::enabled()
+                           ? coro_io::urma_benchmark_profile::now_ns()
+                           : 0;
     if constexpr (std::is_void_v<return_type>) {
       if constexpr (std::is_void_v<Self>) {
         if constexpr (has_coro_conn_v) {
-          // call void func(coro_conn, args...)
           std::apply(func, std::tuple_cat(
                                std::forward_as_tuple(
                                    context_base<conn_return_type, rpc_protocol>(
@@ -117,13 +126,11 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
                                std::move(args)));
         }
         else {
-          // call void func(args...)
           std::apply(func, std::move(args));
         }
       }
       else {
         if constexpr (has_coro_conn_v) {
-          // call void self->func(coro_conn, args...)
           std::apply(
               func, std::tuple_cat(
                         std::forward_as_tuple(
@@ -132,27 +139,51 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
                         std::move(args)));
         }
         else {
-          // call void self->func(args...)
           std::apply(func, std::tuple_cat(std::forward_as_tuple(*self),
                                           std::move(args)));
         }
       }
-      return std::pair{err_code{}, serialize_proto::serialize()};
+      coro_io::urma_benchmark_profile::record_since_with_size(
+          coro_io::urma_benchmark_profile::stage::server_handler_execute,
+          exec_begin, data.size());
+      auto ser_begin = coro_io::urma_benchmark_profile::enabled()
+                           ? coro_io::urma_benchmark_profile::now_ns()
+                           : 0;
+      auto result = std::pair{err_code{}, serialize_proto::serialize()};
+      coro_io::urma_benchmark_profile::record_since_with_size(
+          coro_io::urma_benchmark_profile::stage::server_serialize_result,
+          ser_begin, 0);
+      return result;
     }
     else {
       if constexpr (std::is_void_v<Self>) {
-        // call return_type func(args...)
-
-        return std::pair{err_code{}, serialize_proto::serialize(
-                                         std::apply(func, std::move(args)))};
+        auto ret = std::apply(func, std::move(args));
+        coro_io::urma_benchmark_profile::record_since_with_size(
+            coro_io::urma_benchmark_profile::stage::server_handler_execute,
+            exec_begin, data.size());
+        auto ser_begin = coro_io::urma_benchmark_profile::enabled()
+                             ? coro_io::urma_benchmark_profile::now_ns()
+                             : 0;
+        auto buf = serialize_proto::serialize(std::move(ret));
+        coro_io::urma_benchmark_profile::record_since_with_size(
+            coro_io::urma_benchmark_profile::stage::server_serialize_result,
+            ser_begin, buf.size());
+        return std::pair{err_code{}, std::move(buf)};
       }
       else {
-        // call return_type self->func(args...)
-
-        return std::pair{err_code{},
-                         serialize_proto::serialize(std::apply(
-                             func, std::tuple_cat(std::forward_as_tuple(*self),
-                                                  std::move(args))))};
+        auto ret = std::apply(func, std::tuple_cat(std::forward_as_tuple(*self),
+                                                   std::move(args)));
+        coro_io::urma_benchmark_profile::record_since_with_size(
+            coro_io::urma_benchmark_profile::stage::server_handler_execute,
+            exec_begin, data.size());
+        auto ser_begin = coro_io::urma_benchmark_profile::enabled()
+                             ? coro_io::urma_benchmark_profile::now_ns()
+                             : 0;
+        auto buf = serialize_proto::serialize(std::move(ret));
+        coro_io::urma_benchmark_profile::record_since_with_size(
+            coro_io::urma_benchmark_profile::stage::server_serialize_result,
+            ser_begin, buf.size());
+        return std::pair{err_code{}, std::move(buf)};
       }
     }
   }
