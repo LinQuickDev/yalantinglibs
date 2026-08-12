@@ -12,16 +12,20 @@ URMA RPC 由三层组成：
 
 连接建立先使用 TCP 交换 EID、UASID、Jetty ID 和 buffer pool segment；随后双方导入对端资源，数据面切换到 URMA。TCP 只用于握手。
 
-```text
-coro_rpc client/server
-        |
-        v
-urma_socket_t -- TCP handshake --> peer metadata
-        |
-        +-- device/context, JFC/JFCE, Jetty
-        +-- registered buffer pool segment
-        v
-URMA send/receive work requests -> completion polling/event loop
+```mermaid
+flowchart TD
+    RPC["coro_rpc client/server"] --> SOCKET["coro_io::urma_socket_t"]
+    SOCKET --> HANDSHAKE["TCP handshake"]
+    HANDSHAKE --> META["Peer metadata: EID, UASID, Jetty ID, Segment"]
+    SOCKET --> RESOURCES["URMA resources"]
+    RESOURCES --> CONTEXT["Device and context"]
+    RESOURCES --> QUEUES["JFC/JFCE and Jetty"]
+    RESOURCES --> SEGMENT["Registered buffer pool segment"]
+    META --> IMPORT["Import peer resources"]
+    QUEUES --> WR["Send/receive work requests"]
+    SEGMENT --> WR
+    IMPORT --> WR
+    WR --> COMPLETION["Completion polling or event loop"]
 ```
 
 buffer pool 将一块连续内存注册为 Segment，再切分为固定大小的 buffer，减少重复注册开销。发送窗口受本地发送 buffer 数和对端接收 buffer 数共同限制。
