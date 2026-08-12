@@ -57,9 +57,3 @@ cdb.json
 
 # website
 website/docs/zh/*/images/
-
-# Worktrees
-.worktrees/
-
-# ZCode agent session data
-.zcode/
