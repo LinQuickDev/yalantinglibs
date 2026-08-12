@@ -264,6 +264,7 @@ class coro_rpc_client {
 #ifdef YLT_ENABLE_URMA
                  ,
                  coro_io::urma_socket_t::config_t
+#endif
 #ifdef YLT_ENABLE_ND
                  ,
                  coro_io::nd_socket_t::config_t
