@@ -294,7 +294,8 @@ class coro_rpc_client {
       coro_io::ExecutorWrapper<> *executor = coro_io::get_global_executor(),
       config conf = {})
       : timer_(std::make_unique<coro_io::period_timer>(
-            executor ? executor->get_asio_executor() : asio::io_context{}.get_executor())),
+            executor ? executor->get_asio_executor()
+                     : asio::io_context{}.get_executor())),
         control_(std::make_shared<control_t>(executor, false, conf.local_ip)) {
     if (!executor) [[unlikely]] {
       ELOG_ERROR << "coro_rpc_client: executor is nullptr";
@@ -326,8 +327,8 @@ class coro_rpc_client {
   [[nodiscard]] bool init_socket_wrapper(
       const coro_io::urma_socket_t::config_t &config) {
     ELOG_INFO << "URMA init_socket_wrapper: buffer_size=" << config.buffer_size
-             << " recv_buffer_cnt=" << config.recv_buffer_cnt
-             << " send_buffer_cnt=" << config.send_buffer_cnt;
+              << " recv_buffer_cnt=" << config.recv_buffer_cnt
+              << " send_buffer_cnt=" << config.send_buffer_cnt;
     return control_->socket_wrapper_.init_client(config);
   }
 #endif
@@ -1989,7 +1990,8 @@ class coro_rpc_client {
       // Without this, consecutive async_write calls (even serialized by
       // write_mutex_) can overrun the remote JFR's pre-posted recv buffers,
       // causing RNR retry exhaustion and WR_FLUSH_ERR.
-      if constexpr (std::is_same_v<Socket, coro_io::socket_wrapper_t::urma_socket_type>) {
+      if constexpr (std::is_same_v<
+                        Socket, coro_io::socket_wrapper_t::urma_socket_type>) {
         auto slot_ec = co_await socket.waiting_write_over();
         if (slot_ec) {
           write_mutex_ = false;

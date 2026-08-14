@@ -13,14 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "doctest.h"
-
 #include <cstdlib>
 #include <string>
-#include <vector>
 #include <variant>
-
+#include <vector>
 #include <ylt/coro_rpc/coro_rpc_client.hpp>
+
+#include "doctest.h"
 
 #ifdef _WIN32
 inline void set_test_env(const char* name, const char* value) {
@@ -150,7 +149,8 @@ TEST_CASE("urma rpc env disabled keeps default client tcp config") {
 
 TEST_CASE("urma rpc enabled without usable device keeps client constructible") {
   scoped_env_var enable("URMA_RPC_ENABLE", "1");
-  scoped_env_var device("URMA_RPC_DEVICE", "device_that_should_not_exist_for_test");
+  scoped_env_var device("URMA_RPC_DEVICE",
+                        "device_that_should_not_exist_for_test");
 
   coro_rpc::coro_rpc_client client;
   CHECK(std::holds_alternative<coro_rpc::coro_rpc_client::tcp_config>(

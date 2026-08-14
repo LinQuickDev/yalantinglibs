@@ -190,8 +190,7 @@ struct socket_wrapper_t {
     } catch (const std::system_error &e) {
       ELOG_WARN << "init urma client failed: code=" << e.code().value()
                 << ", category=" << e.code().category().name()
-                << ", message=" << e.code().message()
-                << ", what=" << e.what();
+                << ", message=" << e.code().message() << ", what=" << e.what();
       init_ok_ = false;
       return false;
     } catch (const std::exception &e) {
@@ -331,8 +330,7 @@ struct socket_wrapper_t {
 #ifdef YLT_ENABLE_URMA
     if (urma_socket_) {
       return {urma_socket_->get_remote_address(),
-              urma_socket_->get_remote_qp_num(),
-              coro_io::endpoint::rdma};
+              urma_socket_->get_remote_qp_num(), coro_io::endpoint::rdma};
     }
 #endif
 
@@ -356,8 +354,7 @@ struct socket_wrapper_t {
 #ifdef YLT_ENABLE_URMA
     if (urma_socket_) {
       return {urma_socket_->get_local_address(),
-              urma_socket_->get_local_qp_num(),
-              coro_io::endpoint::rdma};
+              urma_socket_->get_local_qp_num(), coro_io::endpoint::rdma};
     }
 #endif
 #ifdef YLT_ENABLE_ND
