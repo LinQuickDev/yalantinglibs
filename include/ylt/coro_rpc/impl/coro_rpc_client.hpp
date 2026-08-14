@@ -1567,8 +1567,7 @@ class coro_rpc_client {
   template <auto func, typename Socket, typename... Args>
   async_simple::coro::Lazy<rpc_error> send_request_for_impl(
       Socket &soc, request_config_t &config, uint32_t &id,
-      coro_io::period_timer &timer,
-      Args &&...args) {
+      coro_io::period_timer &timer, Args &&...args) {
     if (control_->has_closed_)
       AS_UNLIKELY {
         ELOG_ERROR << "client has been closed, please re-connect"
@@ -1592,7 +1591,8 @@ class coro_rpc_client {
           .start([](auto &&) {
           });
     }
-    co_return co_await send_impl<func>(soc, id,
+    co_return co_await send_impl<func>(
+        soc, id,
         coro_io::data_view{config.request_attachment,
                            config.request_attachment_gpu_id},
         std::forward<Args>(args)...);
@@ -1910,10 +1910,9 @@ class coro_rpc_client {
  private:
   template <auto func, typename Socket, typename... Args>
   async_simple::coro::Lazy<rpc_error> send_impl(
-      Socket &socket, uint32_t &id,
-      coro_io::data_view req_attachment,
+      Socket &socket, uint32_t &id, coro_io::data_view req_attachment,
       Args &&...args) {
-      auto buffer = prepare_buffer<func>(id, req_attachment.size(),
+    auto buffer = prepare_buffer<func>(id, req_attachment.size(),
                                        std::forward<Args>(args)...);
     if (buffer.empty()) {
       co_return rpc_error{errc::message_too_large};

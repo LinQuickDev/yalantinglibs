@@ -138,12 +138,14 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
     else {
       if constexpr (std::is_void_v<Self>) {
         auto ret = std::apply(func, std::move(args));
-        return std::pair{err_code{}, serialize_proto::serialize(std::move(ret))};
+        return std::pair{err_code{},
+                         serialize_proto::serialize(std::move(ret))};
       }
       else {
         auto ret = std::apply(func, std::tuple_cat(std::forward_as_tuple(*self),
                                                    std::move(args)));
-        return std::pair{err_code{}, serialize_proto::serialize(std::move(ret))};
+        return std::pair{err_code{},
+                         serialize_proto::serialize(std::move(ret))};
       }
     }
   }

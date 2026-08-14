@@ -112,8 +112,7 @@ struct urma_socket_shared_state_t
   urma_socket_shared_state_t(std::shared_ptr<urma_device_wrapper_t> device,
                              ExecutorWrapper<>* executor,
                              std::size_t recv_buffer_cnt,
-                             std::size_t send_buffer_cnt,
-                             std::size_t cq_size)
+                             std::size_t send_buffer_cnt, std::size_t cq_size)
       : executor_(executor),
         device_(std::move(device)),
         buffer_pool_(device_->get_buffer_pool()),
@@ -269,7 +268,8 @@ struct urma_socket_shared_state_t
   void post_send(urma_buffer_t buffer, std::size_t length,
                  callback_t&& callback) {
     if (has_close_ || !remote_jetty_) {
-      if (buffer) buffer_pool_->return_buffer(buffer);
+      if (buffer)
+        buffer_pool_->return_buffer(buffer);
       resume({std::make_error_code(std::errc::not_connected), 0},
              std::move(callback));
       return;
@@ -291,7 +291,8 @@ struct urma_socket_shared_state_t
     auto ec =
         make_urma_error(urma_post_jetty_send_wr(jetty_.get(), &wr, &bad_wr));
     if (ec) {
-      if (buffer) buffer_pool_->return_buffer(buffer);
+      if (buffer)
+        buffer_pool_->return_buffer(buffer);
       resume({ec, 0}, std::move(callback));
       return;
     }
@@ -587,10 +588,12 @@ struct urma_socket_shared_state_t
 
   void release_resources() {
     close();
-    if (recv_buffer_) buffer_pool_->return_buffer(recv_buffer_);
+    if (recv_buffer_)
+      buffer_pool_->return_buffer(recv_buffer_);
     while (!recv_result_.empty()) {
       auto pending = recv_result_.pop();
-      if (pending.buffer) buffer_pool_->return_buffer(pending.buffer);
+      if (pending.buffer)
+        buffer_pool_->return_buffer(pending.buffer);
     }
     while (!recv_queue_.empty()) {
       auto buffer = recv_queue_.pop();
@@ -940,8 +943,8 @@ class urma_socket_t {
     state_ = std::make_shared<detail::urma_socket_shared_state_t>(
         std::move(device), executor_, conf_.recv_buffer_cnt,
         conf_.send_buffer_cnt, conf_.cq_size);
-    buffer_size_ = std::min<uint32_t>(
-        conf_.buffer_size, state_->buffer_pool_->buffer_size());
+    buffer_size_ = std::min<uint32_t>(conf_.buffer_size,
+                                      state_->buffer_pool_->buffer_size());
     state_->busy_poll_budget_ = conf_.busy_poll_budget;
     state_->idle_poll_interval_ = conf_.poll_interval;
     if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt, conf_.event_mode)) {

@@ -23,9 +23,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
-#include <cstring>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -327,9 +327,8 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       std::string_view payload;
       // rpc_protocol::buffer_type maybe from user, default from framework.
 
-      ec = co_await rpc_protocol::read_payload(socket, req_head, body,
-                                               req_attachment,
-                                               context_info.get());
+      ec = co_await rpc_protocol::read_payload(
+          socket, req_head, body, req_attachment, context_info.get());
       cancel_timer(req_id, "recv client data");
       payload = std::string_view{body};
 

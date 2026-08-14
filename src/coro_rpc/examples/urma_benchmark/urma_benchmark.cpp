@@ -72,6 +72,7 @@ struct options_t {
   uint16_t port = 9001;
   std::string device = "bonding_dev_0";
   int eid_index = 0;
+  std::string event_mode = true;
   uint32_t payload_size = 64;
   uint32_t latency_iters = 10000;
   uint32_t warmup_iters = 1000;
@@ -116,6 +117,7 @@ void configure_urma_rpc_env(const options_t& opt) {
   set_process_env("URMA_RPC_MAX_MEMORY_USAGE",
                   std::to_string(effective_pool_memory_usage(opt)));
   set_process_env("URMA_RPC_TP_TYPE", "ctp");
+  set_process_env("URMA_RPC_EVENT_MODE", opt.event_mode);
 }
 
 void print_usage(const char* program) {
@@ -134,6 +136,7 @@ void print_usage(const char* program) {
       << "  --queue-depth <n>        URMA send/recv queue depth. Default 64\n"
       << "  --max-memory-mib <n>     URMA buffer pool memory per process. Default 256, auto-raised when needed\n"
       << "  --no-urma               Use TCP instead of URMA RPC. Default URMA\n"
+      << "  --event-mode <true|false> URMA event mode. Default true\n"
       << "  --profile                Enable in-memory stage latency profiling. Default off\n"
       << "  --profile-sample-rate <n> Record one sample every n events per stage/thread. Default 1\n"
       << "  --log <trace|debug|info|warn|error> Default info\n\n"
@@ -235,6 +238,19 @@ options_t parse_options(int argc, char** argv) {
     }
     else if (key == "--no-urma") {
       opt.use_urma = false;
+    }
+    else if (key == "--event-mode") {
+      auto value = require_value();
+      if (value == "true") {
+        opt.event_mode = "true";
+      }
+      else if (value == "false") {
+        opt.event_mode = "false";
+      }
+      else {
+        throw std::invalid_argument(
+            "--event-mode must be true or false, got: " + std::string(value));
+      }
     }
     else if (key == "--profile-sample-rate") {
       opt.profile_sample_rate =
