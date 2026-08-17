@@ -307,6 +307,8 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
               std::move(context_info->req_attachment_));
         }
       }
+      context_info->req_attachment_views_.clear();
+      context_info->req_attachment_ = {};
       auto &req_head = context_info->req_head_;
       auto &body = context_info->req_body_;
       auto &req_attachment = context_info->req_attachment_;

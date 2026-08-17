@@ -255,8 +255,12 @@ struct urma_socket_shared_state_t
     urma_jfr_wr_t wr{sg, 0, nullptr};
     urma_jfr_wr_t* bad_wr = nullptr;
     auto ec = make_urma_error(urma_post_jfr_wr(jfr_.get(), &wr, &bad_wr));
-    if (!ec)
-      recv_queue_.push(std::move(buffer));
+    if (ec) {
+      if (buffer)
+        buffer_pool_->return_buffer(buffer);
+      return ec;
+    }
+    recv_queue_.push(std::move(buffer));
     return ec;
   }
 
@@ -620,8 +624,9 @@ struct urma_socket_shared_state_t
       auto buffer = recv_queue_.pop();
       buffer_pool_->return_buffer(buffer);
     }
-    // Release stream_descriptor before closing the jfce fd it wraps.
-    event_fd_.reset();
+    // Release stream_descriptor ownership before deleting the jfce fd.
+    if (event_fd_)
+      event_fd_->release();
     remote_seg_.reset();
     remote_jetty_.reset();
     jetty_.reset();
@@ -1160,8 +1165,9 @@ class urma_socket_t {
   }
 
   void release_recv_buffer() {
-    if (state_->recv_buffer_)
-      state_->buffer_pool_->return_buffer(state_->recv_buffer_);
+    auto buffer = std::move(state_->recv_buffer_);
+    if (buffer)
+      state_->buffer_pool_->return_buffer(buffer);
   }
 
   void close_handshake_socket() {

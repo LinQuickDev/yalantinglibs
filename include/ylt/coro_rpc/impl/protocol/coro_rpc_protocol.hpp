@@ -159,14 +159,13 @@ struct coro_rpc_protocol {
           if (!buffer.empty()) {
             auto [body_ec, ignored] =
                 co_await coro_io::async_read(socket, asio::buffer(buffer));
-            if (body_ec) 
+            if (body_ec)
               co_return body_ec;
           }
-          attachment = coro_io::heterogeneous_buffer{};
           auto [attachment_ec, views] =
               co_await coro_io::detail::async_urma_read_views(
                   socket, req_head.attach_length);
-          if (attachment_ec) 
+          if (attachment_ec)
             co_return attachment_ec;
           context_info->set_request_attachment_views(std::move(views));
           co_return std::error_code{};
