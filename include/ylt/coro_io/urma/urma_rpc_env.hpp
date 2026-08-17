@@ -180,8 +180,7 @@ inline std::optional<coro_io::urma_socket_t::config_t> probe_urma_rpc_config(
               << ", send_buffer_cnt=" << config.send_buffer_cnt
               << ", buffer_size=" << config.buffer_size
               << ", max_memory_usage=" << config.max_memory_usage
-              << ", jfs_priority="
-              << static_cast<unsigned>(config.jfs_priority)
+              << ", jfs_priority=" << static_cast<unsigned>(config.jfs_priority)
               << ", event_mode=" << (config.event_mode ? "on" : "off")
               << ", busy_poll_budget=" << config.busy_poll_budget;
     return config;

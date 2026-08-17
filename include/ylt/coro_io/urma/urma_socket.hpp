@@ -141,9 +141,41 @@ struct urma_socket_shared_state_t
     }
   }
 
+  static std::optional<uint8_t> get_ctp_priority(const urma_device_attr_t& attr,
+                                                 uint8_t requested_priority) {
+    constexpr uint8_t max_priority = 15;
+    const auto& priority_info = attr.dev_cap.priority_info;
+    if (requested_priority > max_priority)
+      return std::nullopt;
+    bool has_priority_info = false;
+    for (uint8_t priority = 0; priority <= max_priority; ++priority) {
+      has_priority_info |= priority_info[priority].tp_type.value != 0;
+    }
+    if (!has_priority_info ||
+        priority_info[requested_priority].tp_type.bs.ctp != 0) {
+      return requested_priority;
+    }
+    for (uint8_t priority = 0; priority <= max_priority; ++priority) {
+      if (priority_info[priority].tp_type.bs.ctp != 0)
+        return priority;
+    }
+    return std::nullopt;
+  }
+
   bool init(std::size_t cq_size, std::size_t send_buffer_cnt, bool event_mode,
             uint8_t jfs_priority) {
     const auto& cap = device_->attr().dev_cap;
+    auto ctp_priority = get_ctp_priority(device_->attr(), jfs_priority);
+    if (!ctp_priority) {
+      ELOG_ERROR << "URMA device has no priority supporting CTP";
+      return false;
+    }
+    if (*ctp_priority != jfs_priority) {
+      ELOG_WARN << "URMA priority " << static_cast<unsigned>(jfs_priority)
+                << " does not support CTP; use priority "
+                << static_cast<unsigned>(*ctp_priority);
+      jfs_priority = *ctp_priority;
+    }
     ELOG_INFO << "URMA resource init: device=" << device_->name()
               << ", eid=" << device_->eid_string()
               << ", eid_index=" << device_->eid_index()
@@ -153,8 +185,8 @@ struct urma_socket_shared_state_t
               << ", max_jfc_depth=" << cap.max_jfc_depth
               << ", max_jfr_depth=" << cap.max_jfr_depth
               << ", max_jfs_depth=" << cap.max_jfs_depth
-              << ", event_mode=" << event_mode << ", jfs_priority="
-              << static_cast<unsigned>(jfs_priority);
+              << ", event_mode=" << event_mode
+              << ", jfs_priority=" << static_cast<unsigned>(jfs_priority);
 
     // Create JFCE first so it can be bound to the JFC at creation time.
     if (event_mode) {
