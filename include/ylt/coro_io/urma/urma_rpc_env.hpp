@@ -136,6 +136,7 @@ inline coro_io::urma_socket_t::config_t make_urma_rpc_config_from_env() {
   urma_rpc_parse_env_integer("URMA_RPC_MAX_MEMORY_USAGE",
                              config.max_memory_usage);
   urma_rpc_parse_env_tp_type(config.tp_type);
+  urma_rpc_parse_env_integer("URMA_RPC_PRIORITY", config.jfs_priority);
   config.event_mode =
       urma_rpc_env_flag("URMA_RPC_EVENT_MODE", /*default*/ true);
   urma_rpc_parse_env_integer("URMA_RPC_BUSY_POLL_BUDGET",
@@ -173,6 +174,8 @@ inline std::optional<coro_io::urma_socket_t::config_t> probe_urma_rpc_config(
               << ", send_buffer_cnt=" << config.send_buffer_cnt
               << ", buffer_size=" << config.buffer_size
               << ", max_memory_usage=" << config.max_memory_usage
+              << ", jfs_priority="
+              << static_cast<unsigned>(config.jfs_priority)
               << ", event_mode=" << (config.event_mode ? "on" : "off")
               << ", busy_poll_budget=" << config.busy_poll_budget;
     return config;

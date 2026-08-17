@@ -99,6 +99,7 @@ TEST_CASE("urma rpc env config parsing uses defaults for invalid values") {
   scoped_env_var buffer("URMA_RPC_BUFFER_SIZE", "8192");
   scoped_env_var memory("URMA_RPC_MAX_MEMORY_USAGE", "16777216");
   scoped_env_var tp("URMA_RPC_TP_TYPE", "rtp");
+  scoped_env_var priority("URMA_RPC_PRIORITY", "7");
 
   auto config = coro_io::detail::make_urma_rpc_config_from_env();
   CHECK(config.device_name == "test_dev");
@@ -109,6 +110,7 @@ TEST_CASE("urma rpc env config parsing uses defaults for invalid values") {
   CHECK(config.buffer_size == 8192);
   CHECK(config.max_memory_usage == 16777216);
   CHECK(config.tp_type == URMA_RTP);
+  CHECK(config.jfs_priority == 7);
 }
 
 TEST_CASE("urma rpc env event mode defaults to on and can be overridden") {

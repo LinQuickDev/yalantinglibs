@@ -110,6 +110,7 @@ export URMA_RPC_EID_INDEX=0
 | `URMA_RPC_BUFFER_SIZE` | 单个 buffer 大小 |
 | `URMA_RPC_MAX_MEMORY_USAGE` | buffer pool 上限，单位 byte |
 | `URMA_RPC_TP_TYPE` | `ctp`、`rtp` 或其他支持的类型 |
+| `URMA_RPC_PRIORITY` | JFS priority，默认值为 `15` |
 | `URMA_RPC_EVENT_MODE` | JFCE 事件模式开关 |
 | `URMA_RPC_BUSY_POLL_BUDGET` | 事件唤醒后的忙轮询次数 |
 | `URMA_RPC_POLL_INTERVAL` | 轮询间隔，单位微秒 |

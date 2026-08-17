@@ -141,7 +141,8 @@ struct urma_socket_shared_state_t
     }
   }
 
-  bool init(std::size_t cq_size, std::size_t send_buffer_cnt, bool event_mode) {
+  bool init(std::size_t cq_size, std::size_t send_buffer_cnt, bool event_mode,
+            uint8_t jfs_priority) {
     const auto& cap = device_->attr().dev_cap;
     ELOG_INFO << "URMA resource init: device=" << device_->name()
               << ", eid=" << device_->eid_string()
@@ -214,7 +215,7 @@ struct urma_socket_shared_state_t
     jetty_cfg.flag.bs.share_jfr = 1;
     jetty_cfg.jfs_cfg.depth = static_cast<uint32_t>(send_buffer_cnt + 2);
     jetty_cfg.jfs_cfg.trans_mode = URMA_TM_RM;
-    jetty_cfg.jfs_cfg.priority = 6;
+    jetty_cfg.jfs_cfg.priority = jfs_priority;
     jetty_cfg.jfs_cfg.max_sge = 1;
     jetty_cfg.jfs_cfg.rnr_retry = URMA_TYPICAL_RNR_RETRY;
     jetty_cfg.jfs_cfg.err_timeout = URMA_TYPICAL_ERR_TIMEOUT;
@@ -678,6 +679,7 @@ class urma_socket_t {
     std::string device_name;
     int eid_index = 0;
     urma_tp_type_t tp_type = URMA_CTP;
+    uint8_t jfs_priority = 15;
     bool event_mode = true;
     std::size_t busy_poll_budget = 16;
     std::chrono::microseconds poll_interval{5};
@@ -986,7 +988,8 @@ class urma_socket_t {
                                       state_->buffer_pool_->buffer_size());
     state_->busy_poll_budget_ = conf_.busy_poll_budget;
     state_->idle_poll_interval_ = conf_.poll_interval;
-    if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt, conf_.event_mode)) {
+    if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt, conf_.event_mode,
+                      conf_.jfs_priority)) {
       auto stage = state_->init_stage_;
       auto error = state_->init_error_;
       ELOG_ERROR << "URMA socket resource initialization failed: stage="
