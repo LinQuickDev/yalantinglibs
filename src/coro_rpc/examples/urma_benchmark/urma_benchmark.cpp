@@ -84,6 +84,7 @@ struct options_t {
   uint32_t server_threads = std::max(1u, std::thread::hardware_concurrency());
   uint32_t client_threads = std::max(1u, std::thread::hardware_concurrency());
   uint16_t queue_depth = 64;
+  uint8_t priority = 15;
   uint32_t buffer_size = 4 * 1024;
   uint64_t max_memory_usage = 256ull * 1024 * 1024;
   bool profile = false;
@@ -117,6 +118,7 @@ void configure_urma_rpc_env(const options_t& opt) {
   set_process_env("URMA_RPC_MAX_MEMORY_USAGE",
                   std::to_string(effective_pool_memory_usage(opt)));
   set_process_env("URMA_RPC_TP_TYPE", "ctp");
+  set_process_env("URMA_RPC_PRIORITY", std::to_string(opt.priority));
   set_process_env("URMA_RPC_EVENT_MODE", opt.event_mode);
 }
 
@@ -137,6 +139,7 @@ void print_usage(const char* program) {
       << "  --buffer-size <bytes>    URMA SEND chunk size. Default 4096 for "
          "CTP\n"
       << "  --queue-depth <n>        URMA send/recv queue depth. Default 64\n"
+      << "  --priority <n>          URMA JFS priority. Default 15\n"
       << "  --max-memory-mib <n>     URMA buffer pool memory per process. "
          "Default 256, auto-raised when needed\n"
       << "  --no-urma               Use TCP instead of URMA RPC. Default URMA\n"
@@ -247,6 +250,12 @@ options_t parse_options(int argc, char** argv) {
     }
     else if (key == "--queue-depth") {
       opt.queue_depth = static_cast<uint16_t>(parse_u64(require_value(), key));
+    }
+    else if (key == "--priority") {
+      auto priority = parse_u64(require_value(), key);
+      if (priority > 15)
+        throw std::invalid_argument("--priority must be in [0, 15]");
+      opt.priority = static_cast<uint8_t>(priority);
     }
     else if (key == "--max-memory-mib") {
       opt.max_memory_usage = parse_u64(require_value(), key) * 1024 * 1024;
@@ -383,7 +392,8 @@ coro_io::urma_socket_t::config_t make_urma_config(const options_t& opt) {
       .max_memory_usage = effective_pool_memory_usage(opt),
       .device_name = opt.device,
       .eid_index = opt.eid_index,
-      .tp_type = URMA_CTP};
+      .tp_type = URMA_CTP,
+      .jfs_priority = opt.priority};
 }
 
 bool init_global_urma(const options_t& opt) {

@@ -153,7 +153,8 @@ struct urma_socket_shared_state_t
               << ", max_jfc_depth=" << cap.max_jfc_depth
               << ", max_jfr_depth=" << cap.max_jfr_depth
               << ", max_jfs_depth=" << cap.max_jfs_depth
-              << ", event_mode=" << event_mode;
+              << ", event_mode=" << event_mode << ", jfs_priority="
+              << static_cast<unsigned>(jfs_priority);
 
     // Create JFCE first so it can be bound to the JFC at creation time.
     if (event_mode) {

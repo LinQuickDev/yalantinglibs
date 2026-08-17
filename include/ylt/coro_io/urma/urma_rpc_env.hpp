@@ -136,7 +136,13 @@ inline coro_io::urma_socket_t::config_t make_urma_rpc_config_from_env() {
   urma_rpc_parse_env_integer("URMA_RPC_MAX_MEMORY_USAGE",
                              config.max_memory_usage);
   urma_rpc_parse_env_tp_type(config.tp_type);
+  auto default_priority = config.jfs_priority;
   urma_rpc_parse_env_integer("URMA_RPC_PRIORITY", config.jfs_priority);
+  if (config.jfs_priority > 15) {
+    ELOG_WARN << "invalid URMA_RPC_PRIORITY value; use default "
+              << static_cast<unsigned>(default_priority);
+    config.jfs_priority = default_priority;
+  }
   config.event_mode =
       urma_rpc_env_flag("URMA_RPC_EVENT_MODE", /*default*/ true);
   urma_rpc_parse_env_integer("URMA_RPC_BUSY_POLL_BUDGET",
