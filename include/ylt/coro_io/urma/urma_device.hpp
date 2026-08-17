@@ -66,7 +66,9 @@ class urma_device_wrapper_t {
 
   std::string eid_string() const;
   asio::ip::address gid_address() const;
-  bool is_valid() const { return context_ != nullptr && device_ptr_ != nullptr; }
+  bool is_valid() const {
+    return context_ != nullptr && device_ptr_ != nullptr;
+  }
   std::shared_ptr<urma_buffer_pool_t> get_buffer_pool() const {
     std::lock_guard lock(buffer_pool_mutex_);
     return buffer_pool_;
@@ -93,15 +95,15 @@ class urma_device_wrapper_t {
 using urma_device_t = urma_device_wrapper_t;
 
 struct urma_buffer_pool_config_t {
-  uint32_t buffer_size = 4 * 1024;             // buffer size
+  uint32_t buffer_size = 4 * 1024;               // buffer size
   uint64_t max_memory_usage = 20 * 1024 * 1024;  // max memory usage
-  std::chrono::seconds idle_timeout{5};        // idle timeout
+  std::chrono::seconds idle_timeout{5};          // idle timeout
 };
 
 struct urma_init_config_t {
-  std::string dev_name;                        // device name, empty for auto-select
+  std::string dev_name;  // device name, empty for auto-select
   urma_buffer_pool_config_t buffer_pool_config;  // buffer pool config
-  int eid_index = 0;                           // EID index to use
+  int eid_index = 0;                             // EID index to use
   uint32_t bond_mode = BONDP_BONDING_MODE_STANDALONE;
   uint32_t bond_level = BONDP_BONDING_LEVEL_IODIE;
 };
@@ -110,8 +112,10 @@ class urma_device_manager {
  public:
   static urma_device_manager& instance();
   bool init();
-  std::shared_ptr<urma_device_wrapper_t> get_device(const std::string& device_name = "", int eid_index = 0);
-  std::shared_ptr<urma_device_wrapper_t> get_device(const urma_init_config_t& config);
+  std::shared_ptr<urma_device_wrapper_t> get_device(
+      const std::string& device_name = "", int eid_index = 0);
+  std::shared_ptr<urma_device_wrapper_t> get_device(
+      const urma_init_config_t& config);
   std::vector<std::shared_ptr<urma_device_wrapper_t>> get_all_devices();
   std::shared_ptr<urma_device_wrapper_t> get_global_device();
 
@@ -149,7 +153,8 @@ inline urma_device_wrapper_t::~urma_device_wrapper_t() { close(); }
 inline bool urma_device_wrapper_t::configure_buffer_pool(
     std::size_t buffer_size, std::size_t max_memory_usage) {
   std::lock_guard lock(buffer_pool_mutex_);
-  if (!context_ || buffer_size == 0) return false;
+  if (!context_ || buffer_size == 0)
+    return false;
   auto requested_buffer_count =
       std::max<std::size_t>(1, max_memory_usage / buffer_size);
   if (buffer_pool_) {
@@ -167,13 +172,13 @@ inline bool urma_device_wrapper_t::configure_buffer_pool(
       return false;
     }
   }
-  buffer_pool_ =
-      std::make_shared<urma_buffer_pool_t>(context_, buffer_size,
-                                           requested_buffer_count);
+  buffer_pool_ = std::make_shared<urma_buffer_pool_t>(context_, buffer_size,
+                                                      requested_buffer_count);
   return buffer_pool_->total_buffer_count() != 0;
 }
 
-inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_index) {
+inline bool urma_device_wrapper_t::init(const std::string& device_name,
+                                        int eid_index) {
 #ifdef YLT_ENABLE_URMA
   name_ = device_name;
   eid_index_ = eid_index;
@@ -234,22 +239,23 @@ inline bool urma_device_wrapper_t::init(const std::string& device_name, int eid_
     return false;
   }
 
-  // Bonding devices default to STANDALONE+PORT level (bondp_provider_ops.c:514),
-  // which enables multiple port-EID devices. Under CTP the hardware sprays sends
-  // across the bonding group, but schedule_recv_standalone posts recv WRs to a
-  // single port, causing first-SEND RNR (status=10). Set STANDALONE+IODIE (single
-  // primary-EID device, matching urma_perftest) to avoid the spray/recv mismatch.
-  // Must run while context refcount==1 (before urma_register_seg in
+  // Bonding devices default to STANDALONE+PORT level
+  // (bondp_provider_ops.c:514), which enables multiple port-EID devices. Under
+  // CTP the hardware sprays sends across the bonding group, but
+  // schedule_recv_standalone posts recv WRs to a single port, causing
+  // first-SEND RNR (status=10). Set STANDALONE+IODIE (single primary-EID
+  // device, matching urma_perftest) to avoid the spray/recv mismatch. Must run
+  // while context refcount==1 (before urma_register_seg in
   // configure_buffer_pool), else bondp_set_bonding_mode returns URMA_EAGAIN.
   if (name_.compare(0, 7, "bonding") == 0) {
     bondp_set_bonding_mode_in_t bond_in = {
-      .bonding_mode = static_cast<bondp_bonding_mode_t>(bond_mode_),
-      .bonding_level = static_cast<bondp_bonding_level_t>(bond_level_),
+        .bonding_mode = static_cast<bondp_bonding_mode_t>(bond_mode_),
+        .bonding_level = static_cast<bondp_bonding_level_t>(bond_level_),
     };
     urma_user_ctl_in_t ctl_in = {
-      .addr = reinterpret_cast<uint64_t>(&bond_in),
-      .len = static_cast<uint32_t>(sizeof(bond_in)),
-      .opcode = BONDP_USER_CTL_SET_BONDING_MODE,
+        .addr = reinterpret_cast<uint64_t>(&bond_in),
+        .len = static_cast<uint32_t>(sizeof(bond_in)),
+        .opcode = BONDP_USER_CTL_SET_BONDING_MODE,
     };
     urma_user_ctl_out_t ctl_out = {};
     urma_status_t st = urma_user_ctl(context_, &ctl_in, &ctl_out);
@@ -306,22 +312,23 @@ inline void urma_device_wrapper_t::close() {
 inline std::string urma_device_wrapper_t::eid_string() const {
   char buf[64] = {0};
   snprintf(buf, sizeof(buf),
-          "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:"
-          "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
-          eid_.raw[0], eid_.raw[1], eid_.raw[2], eid_.raw[3],
-          eid_.raw[4], eid_.raw[5], eid_.raw[6], eid_.raw[7],
-          eid_.raw[8], eid_.raw[9], eid_.raw[10], eid_.raw[11],
-          eid_.raw[12], eid_.raw[13], eid_.raw[14], eid_.raw[15]);
+           "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:"
+           "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+           eid_.raw[0], eid_.raw[1], eid_.raw[2], eid_.raw[3], eid_.raw[4],
+           eid_.raw[5], eid_.raw[6], eid_.raw[7], eid_.raw[8], eid_.raw[9],
+           eid_.raw[10], eid_.raw[11], eid_.raw[12], eid_.raw[13], eid_.raw[14],
+           eid_.raw[15]);
   return std::string(buf);
 }
 
 inline asio::ip::address urma_device_wrapper_t::gid_address() const {
   char buf[64];
-  snprintf(buf, sizeof(buf), "%d.%d.%d.%d",
-          eid_.raw[0], eid_.raw[1], eid_.raw[2], eid_.raw[3]);
+  snprintf(buf, sizeof(buf), "%d.%d.%d.%d", eid_.raw[0], eid_.raw[1],
+           eid_.raw[2], eid_.raw[3]);
   std::error_code ec;
   auto addr = asio::ip::make_address(buf, ec);
-  if (ec) return asio::ip::make_address_v4(0x7F000001);
+  if (ec)
+    return asio::ip::make_address_v4(0x7F000001);
   return addr;
 }
 
@@ -338,7 +345,8 @@ inline urma_device_manager::~urma_device_manager() {
 
 inline bool urma_device_manager::init() {
 #ifdef YLT_ENABLE_URMA
-  if (initialized_) return true;
+  if (initialized_)
+    return true;
   urma_init_attr_t init_attr = {};
   auto status = urma_init(&init_attr);
   if (status != URMA_SUCCESS && status != URMA_EEXIST) {
@@ -358,7 +366,8 @@ inline bool urma_device_manager::init() {
 inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
     const std::string& device_name, int eid_index) {
 #ifdef YLT_ENABLE_URMA
-  if (!initialized_ && !init()) return nullptr;
+  if (!initialized_ && !init())
+    return nullptr;
 
   for (auto& dev : devices_) {
     if ((device_name.empty() || dev->name() == device_name) &&
@@ -368,10 +377,12 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
   }
 
   auto dev = std::make_shared<urma_device_wrapper_t>();
-  if (!dev->init(device_name, eid_index)) return nullptr;
+  if (!dev->init(device_name, eid_index))
+    return nullptr;
 
   devices_.push_back(dev);
-  if (!global_device_) global_device_ = dev;
+  if (!global_device_)
+    global_device_ = dev;
   return dev;
 #else
   return nullptr;
@@ -381,7 +392,8 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
 inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
     const urma_init_config_t& config) {
 #ifdef YLT_ENABLE_URMA
-  if (!initialized_ && !init()) return nullptr;
+  if (!initialized_ && !init())
+    return nullptr;
 
   // Reuse an existing device matching dev_name + eid_index if one was already
   // created. Note: the bond_mode/bond_level of the existing device are kept
@@ -397,10 +409,12 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
   // Bonding config must be set before init() so the SET_BONDING_MODE ioctl
   // runs while the context refcount is still 1.
   dev->set_bonding_config(config.bond_mode, config.bond_level);
-  if (!dev->init(config.dev_name, config.eid_index)) return nullptr;
+  if (!dev->init(config.dev_name, config.eid_index))
+    return nullptr;
 
   devices_.push_back(dev);
-  if (!global_device_) global_device_ = dev;
+  if (!global_device_)
+    global_device_ = dev;
   return dev;
 #else
   return nullptr;
@@ -410,18 +424,22 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
 inline std::vector<std::shared_ptr<urma_device_wrapper_t>>
 urma_device_manager::get_all_devices() {
 #ifdef YLT_ENABLE_URMA
-  if (!devices_.empty()) return devices_;
-  if (!initialized_) init();
+  if (!devices_.empty())
+    return devices_;
+  if (!initialized_)
+    init();
 
   int num_devices = 0;
   ::urma_device_t** urma_dev_list = urma_get_device_list(&num_devices);
-  if (!urma_dev_list || num_devices <= 0) return devices_;
+  if (!urma_dev_list || num_devices <= 0)
+    return devices_;
 
   for (int i = 0; i < num_devices; ++i) {
     auto dev = std::make_shared<urma_device_wrapper_t>();
     if (dev->init(urma_dev_list[i]->name)) {
       devices_.push_back(dev);
-      if (!global_device_) global_device_ = dev;
+      if (!global_device_)
+        global_device_ = dev;
     }
   }
   urma_free_device_list(urma_dev_list);
@@ -431,8 +449,10 @@ urma_device_manager::get_all_devices() {
 #endif
 }
 
-inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_global_device() {
-  if (!global_device_) get_all_devices();
+inline std::shared_ptr<urma_device_wrapper_t>
+urma_device_manager::get_global_device() {
+  if (!global_device_)
+    get_all_devices();
   return global_device_;
 }
 

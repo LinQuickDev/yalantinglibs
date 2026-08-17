@@ -49,7 +49,8 @@ void configure_urma_rpc_auto_env() {
   set_process_env("URMA_RPC_RECV_BUFFER_CNT", "64");
   set_process_env("URMA_RPC_SEND_BUFFER_CNT", "64");
   set_process_env("URMA_RPC_BUFFER_SIZE", std::to_string(4 * 1024));
-  set_process_env("URMA_RPC_MAX_MEMORY_USAGE", std::to_string(20 * 1024 * 1024));
+  set_process_env("URMA_RPC_MAX_MEMORY_USAGE",
+                  std::to_string(20 * 1024 * 1024));
   set_process_env("URMA_RPC_TP_TYPE", "ctp");
 }
 
@@ -103,8 +104,10 @@ void basic_example() {
     return;
   }
 
-  // Client and server keep default TCP config; URMA_RPC_* enables the URMA upgrade.
-  ELOG_INFO << "set_option: server address=" << server.address() << " port=" << server.port();
+  // Client and server keep default TCP config; URMA_RPC_* enables the URMA
+  // upgrade.
+  ELOG_INFO << "set_option: server address=" << server.address()
+            << " port=" << server.port();
   auto ec = syncAwait(client.connect(std::string{server.address()} + ":" +
                                      std::to_string(server.port())));
   if (ec) {
@@ -130,12 +133,12 @@ void set_option() {
   /* init global device, should call before any other call */
   ELOG_INFO << "set_option: initializing global urma device";
   coro_io::get_global_urma_device(coro_io::urma_init_config_t{
-      .dev_name = "bonding_dev_0",  /*URMA device name, default is empty, which means choice
-                          the first URMA device*/
+      .dev_name = "bonding_dev_0", /*URMA device name, default is empty, which
+                         means choice the first URMA device*/
       .buffer_pool_config =
           {
-              .buffer_size = 4 * 1024,               /*CTP send packet size*/
-              .max_memory_usage = 20 * 1024 * 1024,  /*max memory usage*/
+              .buffer_size = 4 * 1024,              /*CTP send packet size*/
+              .max_memory_usage = 20 * 1024 * 1024, /*max memory usage*/
               .idle_timeout = 5s,
           },
       .eid_index = 0 /*EID index to use*/});
@@ -145,11 +148,11 @@ void set_option() {
   coro_rpc_client::config conf;
   ELOG_INFO << "set_option: client created, configuring urma";
   auto urma_config = coro_io::urma_socket_t::config_t{
-      .recv_buffer_cnt = 64,  // buffer cnt of recv queue
-      .send_buffer_cnt = 64,  // buffer cnt of send queue
+      .recv_buffer_cnt = 64,    // buffer cnt of recv queue
+      .send_buffer_cnt = 64,    // buffer cnt of send queue
       .buffer_size = 4 * 1024,  // CTP max send packet size on bonding_dev_0
       .device_name = "bonding_dev_0",  // empty means auto-select
-      .eid_index = 0      // EID index
+      .eid_index = 0                   // EID index
   };
   ELOG_INFO << "set_option: calling client.init_urma";
   if (!client.init_urma(urma_config)) {
@@ -175,7 +178,8 @@ void set_option() {
     return;
   }
 
-  ELOG_INFO << "set_option: server address=" << server.address() << " port=" << server.port();
+  ELOG_INFO << "set_option: server address=" << server.address()
+            << " port=" << server.port();
   auto ec = syncAwait(client.connect(std::string{server.address()} + ":" +
                                      std::to_string(server.port())));
   if (ec) {

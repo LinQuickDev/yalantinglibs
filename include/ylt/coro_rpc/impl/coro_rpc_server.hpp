@@ -228,17 +228,20 @@ class coro_rpc_server_base {
   }
 #endif
 #ifdef YLT_ENABLE_URMA
-  void init_urma(const coro_io::urma_socket_t::config_t &conf = {}) {
+  void init_urma(const coro_io::urma_socket_t::config_t& conf = {}) {
     urma_config_ = conf;
   }
 
   void init_urma_from_env_if_default() {
-    if (urma_config_.has_value()) return;
+    if (urma_config_.has_value()) 
+      return;
 #ifdef YLT_ENABLE_IBV
-    if (ibv_config_.has_value()) return;
+    if (ibv_config_.has_value()) 
+      return;
 #endif
 #ifdef YLT_ENABLE_SSL
-    if (use_ssl_) return;
+    if (use_ssl_) 
+      return;
 #endif
     if (auto urma_config = coro_io::try_make_urma_rpc_config()) {
       urma_config_ = *urma_config;
@@ -672,17 +675,19 @@ class coro_rpc_server_base {
   }
 #endif
 #ifdef YLT_ENABLE_URMA
-  async_simple::coro::Lazy<bool> update_to_urma(coro_connection *conn) {
+  async_simple::coro::Lazy<bool> update_to_urma(coro_connection* conn) {
     bool init_ok = true;
-    auto &wrapper = conn->socket_wrapper();
+    auto& wrapper = conn->socket_wrapper();
     ELOG_DEBUG << "URMA update_to_urma: conn_id=" << conn->get_connection_id()
                << " remote=" << conn->get_remote_endpoint();
     try {
       wrapper = {std::move(*wrapper.socket()), wrapper.get_executor(),
                  urma_config_.value_or(coro_io::urma_socket_t::config_t{})};
-      ELOG_INFO << "URMA socket created for conn_id=" << conn->get_connection_id();
+      ELOG_INFO << "URMA socket created for conn_id=" 
+                << conn->get_connection_id();
     } catch (...) {
-      ELOG_WARN << "URMA init urma connection failed, conn_id=" << conn->get_connection_id();
+      ELOG_WARN << "URMA init urma connection failed, conn_id=" 
+                << conn->get_connection_id();
       init_ok = false;
     }
     co_return init_ok;

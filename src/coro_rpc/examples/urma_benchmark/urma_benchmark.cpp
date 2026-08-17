@@ -36,8 +36,8 @@
 #include "async_simple/coro/SyncAwait.h"
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/coro_io/io_context_pool.hpp"
-#include "ylt/coro_io/urma/urma_device.hpp"
 #include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
+#include "ylt/coro_io/urma/urma_device.hpp"
 #include "ylt/coro_io/urma/urma_io.hpp"
 #include "ylt/coro_io/urma/urma_socket.hpp"
 #include "ylt/coro_rpc/coro_rpc_client.hpp"
@@ -72,7 +72,7 @@ struct options_t {
   uint16_t port = 9001;
   std::string device = "bonding_dev_0";
   int eid_index = 0;
-  std::string event_mode = true;
+  std::string event_mode = "true";
   uint32_t payload_size = 64;
   uint32_t latency_iters = 10000;
   uint32_t warmup_iters = 1000;
@@ -187,17 +187,23 @@ uint64_t parse_u64(std::string_view value, std::string_view name) {
 }
 
 easylog::Severity parse_log_level(std::string_view value) {
-  if (value == "trace") return easylog::Severity::TRACE;
-  if (value == "debug") return easylog::Severity::DEBUG;
-  if (value == "info") return easylog::Severity::INFO;
-  if (value == "warn") return easylog::Severity::WARN;
-  if (value == "error") return easylog::Severity::ERROR;
+  if (value == "trace")
+    return easylog::Severity::TRACE;
+  if (value == "debug")
+    return easylog::Severity::DEBUG;
+  if (value == "info")
+    return easylog::Severity::INFO;
+  if (value == "warn")
+    return easylog::Severity::WARN;
+  if (value == "error")
+    return easylog::Severity::ERROR;
   throw std::invalid_argument("invalid --log value");
 }
 
 options_t parse_options(int argc, char** argv) {
   options_t opt;
-  if (argc >= 2) opt.role = argv[1];
+  if (argc >= 2)
+    opt.role = argv[1];
   if (opt.role != "server" && opt.role != "client") {
     print_usage(argv[0]);
     throw std::invalid_argument("role must be server or client");
@@ -279,8 +285,7 @@ options_t parse_options(int argc, char** argv) {
           static_cast<uint32_t>(parse_u64(require_value(), key));
     }
     else if (key == "--warmup-iters") {
-      opt.warmup_iters =
-          static_cast<uint32_t>(parse_u64(require_value(), key));
+      opt.warmup_iters = static_cast<uint32_t>(parse_u64(require_value(), key));
     }
     else if (key == "--concurrency") {
       opt.concurrency = static_cast<uint32_t>(parse_u64(require_value(), key));
@@ -316,8 +321,7 @@ options_t parse_options(int argc, char** argv) {
     }
   }
 
-  if (opt.mode != "latency" && opt.mode != "throughput" &&
-      opt.mode != "both") {
+  if (opt.mode != "latency" && opt.mode != "throughput" && opt.mode != "both") {
     throw std::invalid_argument("--mode must be latency, throughput, or both");
   }
   if (opt.transport != "rpc" && opt.transport != "raw") {
@@ -391,15 +395,15 @@ bool init_global_urma(const options_t& opt) {
               << pool_memory / 1024 / 1024
               << " MiB for payload/connections/queue-depth" << std::endl;
   }
-  auto device = coro_io::get_global_urma_device(coro_io::urma_init_config_t{
-      .dev_name = opt.device,
-      .buffer_pool_config =
-          {
-              .buffer_size = opt.buffer_size,
-              .max_memory_usage = pool_memory,
-              .idle_timeout = 5s,
-          },
-      .eid_index = opt.eid_index});
+  auto device = coro_io::get_global_urma_device(
+      coro_io::urma_init_config_t{.dev_name = opt.device,
+                                  .buffer_pool_config =
+                                      {
+                                          .buffer_size = opt.buffer_size,
+                                          .max_memory_usage = pool_memory,
+                                          .idle_timeout = 5s,
+                                      },
+                                  .eid_index = opt.eid_index});
   if (!device || !device->is_valid() || !device->get_buffer_pool()) {
     std::cerr << "[urma_benchmark] failed to initialize global URMA device"
               << std::endl;
@@ -409,8 +413,8 @@ bool init_global_urma(const options_t& opt) {
   std::cout << "[urma_benchmark] global URMA device initialized, pool_buffers="
             << pool->total_buffer_count()
             << ", pool_free=" << pool->free_buffer_count()
-            << ", pool_memory_mib="
-            << pool->total_memory_size() / 1024 / 1024 << std::endl;
+            << ", pool_memory_mib=" << pool->total_memory_size() / 1024 / 1024
+            << std::endl;
   return true;
 }
 
@@ -440,7 +444,8 @@ Lazy<bool> issue_rpc_call(coro_rpc_client& client, const std::string& payload,
 Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
                   uint32_t count, std::string_view rpc,
                   uint32_t client_index = 0) {
-  if (count == 0) co_return true;
+  if (count == 0)
+    co_return true;
   std::cout << "[urma_benchmark] client " << client_index
             << " warmup start, iterations=" << count << std::endl;
   for (uint32_t i = 0; i < count; ++i) {
@@ -456,9 +461,10 @@ Lazy<bool> warmup(coro_rpc_client& client, const std::string& payload,
 
 Lazy<bool> issue_rpc_call(coro_rpc_client& client, const std::string& payload,
                           std::string_view rpc, bool profile_call) {
-  auto profile_begin = profile_call && coro_io::urma_benchmark_profile::enabled()
-                           ? coro_io::urma_benchmark_profile::now_ns()
-                           : 0;
+  auto profile_begin =
+      profile_call && coro_io::urma_benchmark_profile::enabled()
+          ? coro_io::urma_benchmark_profile::now_ns()
+          : 0;
   auto payload_size = payload.size();
   bool ok = false;
   if (rpc == "attach_sink") {
@@ -515,7 +521,8 @@ void print_latency_result(std::vector<uint64_t>& samples) {
 Lazy<void> run_latency(const options_t& opt, const std::string& payload) {
   status("latency test starting");
   coro_rpc_client client;
-  if (!(co_await connect_client(client, opt))) co_return;
+  if (!(co_await connect_client(client, opt)))
+    co_return;
   if (!(co_await warmup(client, payload, opt.warmup_iters, opt.rpc)))
     co_return;
 
@@ -548,22 +555,20 @@ struct worker_result_t {
   uint64_t bytes = 0;
 };
 
-Lazy<worker_result_t> throughput_worker(coro_rpc_client& client,
-                                         const std::string& payload,
-                                         std::string_view rpc,
-                                         uint32_t pipeline_depth,
-                                         std::chrono::steady_clock::time_point
-                                             deadline) {
+Lazy<worker_result_t> throughput_worker(
+    coro_rpc_client& client, const std::string& payload, std::string_view rpc,
+    uint32_t pipeline_depth, std::chrono::steady_clock::time_point deadline) {
   worker_result_t stat;
   while (std::chrono::steady_clock::now() < deadline) {
     std::vector<Lazy<bool>> calls;
     calls.reserve(pipeline_depth);
-    for (uint32_t i = 0; i < pipeline_depth &&
-                         std::chrono::steady_clock::now() < deadline;
+    for (uint32_t i = 0;
+         i < pipeline_depth && std::chrono::steady_clock::now() < deadline;
          ++i) {
       calls.push_back(issue_rpc_call(client, payload, rpc));
     }
-    if (calls.empty()) break;
+    if (calls.empty())
+      break;
     auto results = co_await collectAll(std::move(calls));
     for (auto& item : results) {
       bool ok = item.value();
@@ -584,14 +589,15 @@ Lazy<void> run_throughput(const options_t& opt, const std::string& payload) {
   clients.reserve(opt.connections);
   for (uint32_t i = 0; i < opt.connections; ++i) {
     auto client = std::make_unique<coro_rpc_client>();
-    if (!(co_await connect_client(*client, opt, i))) co_return;
+    if (!(co_await connect_client(*client, opt, i)))
+      co_return;
     if (!(co_await warmup(*client, payload, opt.warmup_iters, opt.rpc, i)))
       co_return;
     clients.push_back(std::move(client));
   }
 
-  auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(opt.duration_seconds);
+  auto deadline = std::chrono::steady_clock::now() +
+                  std::chrono::seconds(opt.duration_seconds);
   std::vector<Lazy<worker_result_t>> workers;
   workers.reserve(clients.size());
   for (auto& client : clients) {
@@ -665,7 +671,8 @@ Lazy<void> raw_server_session(asio::ip::tcp::socket tcp_socket,
     }
     ++messages;
     bytes += read_size;
-    if (opt.raw_report_interval_seconds == 0) continue;
+    if (opt.raw_report_interval_seconds == 0)
+      continue;
     auto now = std::chrono::steady_clock::now();
     if (now - last >= std::chrono::seconds(opt.raw_report_interval_seconds)) {
       auto seconds =
@@ -683,7 +690,8 @@ Lazy<void> raw_server_session(asio::ip::tcp::socket tcp_socket,
 
 Lazy<void> run_raw_server(const options_t& opt) {
   status("raw URMA server starting");
-  if (!init_global_urma(opt)) co_return;
+  if (!init_global_urma(opt))
+    co_return;
   auto executor = coro_io::get_global_executor(opt.server_threads);
   asio::ip::tcp::endpoint endpoint(asio::ip::make_address(opt.host), opt.port);
   asio::ip::tcp::acceptor acceptor(executor->context(), endpoint);
@@ -703,18 +711,16 @@ Lazy<void> run_raw_server(const options_t& opt) {
   }
 }
 
-Lazy<raw_result_t> raw_client_worker(const options_t& opt,
-                                     const std::string& payload,
-                                     std::chrono::steady_clock::time_point
-                                         deadline,
-                                     uint32_t client_index) {
+Lazy<raw_result_t> raw_client_worker(
+    const options_t& opt, const std::string& payload,
+    std::chrono::steady_clock::time_point deadline, uint32_t client_index) {
   raw_result_t stat;
   coro_io::urma_socket_t socket(coro_io::get_global_executor(),
                                 make_urma_config(opt));
   auto ec = co_await socket.connect(opt.host, std::to_string(opt.port));
   if (ec) {
-    ELOG_ERROR << "raw client " << client_index << " connect failed: "
-               << ec.message();
+    ELOG_ERROR << "raw client " << client_index
+               << " connect failed: " << ec.message();
     stat.errors++;
     co_return stat;
   }
@@ -739,9 +745,10 @@ Lazy<raw_result_t> raw_client_worker(const options_t& opt,
 
 Lazy<void> run_raw_client(const options_t& opt, const std::string& payload) {
   status("raw URMA throughput test starting");
-  if (!init_global_urma(opt)) co_return;
-  auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(opt.duration_seconds);
+  if (!init_global_urma(opt))
+    co_return;
+  auto deadline = std::chrono::steady_clock::now() +
+                  std::chrono::seconds(opt.duration_seconds);
   std::vector<Lazy<raw_result_t>> workers;
   workers.reserve(opt.connections);
   for (uint32_t i = 0; i < opt.connections; ++i) {
@@ -782,14 +789,15 @@ int run_server(const options_t& opt) {
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth
-            << ", max_memory_mib="
+            << ", queue_depth=" << opt.queue_depth << ", max_memory_mib="
             << effective_pool_memory_usage(opt) / 1024 / 1024 << std::endl;
   if (opt.use_urma) {
     configure_urma_rpc_env(opt);
-    if (!init_global_urma(opt)) return 1;
+    if (!init_global_urma(opt))
+      return 1;
     status("constructing RPC server with URMA RPC auto configuration");
-  } else {
+  }
+  else {
     status("constructing RPC server with TCP (URMA disabled)");
   }
   coro_rpc_server server(opt.server_threads, opt.port, opt.host);
@@ -801,8 +809,7 @@ int run_server(const options_t& opt) {
             << opt.port << ", device=" << opt.device
             << ", eid_index=" << opt.eid_index
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth
-            << ", max_memory_mib="
+            << ", queue_depth=" << opt.queue_depth << ", max_memory_mib="
             << effective_pool_memory_usage(opt) / 1024 / 1024 << std::endl;
   status("entering server event loop");
   return !server.start();
@@ -811,12 +818,10 @@ int run_server(const options_t& opt) {
 int run_client(const options_t& opt) {
   std::cout << "[urma_benchmark] client starting, target=" << opt.host << ":"
             << opt.port << ", mode=" << opt.mode
-            << ", transport=" << opt.transport
-            << ", rpc=" << opt.rpc
+            << ", transport=" << opt.transport << ", rpc=" << opt.rpc
             << ", payload=" << opt.payload_size
             << ", buffer_size=" << opt.buffer_size
-            << ", queue_depth=" << opt.queue_depth
-            << ", max_memory_mib="
+            << ", queue_depth=" << opt.queue_depth << ", max_memory_mib="
             << effective_pool_memory_usage(opt) / 1024 / 1024
             << ", connections=" << opt.connections
             << ", pipeline_depth=" << opt.pipeline_depth
@@ -825,23 +830,23 @@ int run_client(const options_t& opt) {
             << ", concurrency=" << opt.concurrency
             << ", use_urma=" << (opt.use_urma ? "on" : "off")
             << ", profile=" << (opt.profile ? "on" : "off")
-            << ", profile_sample_rate=" << opt.profile_sample_rate
-            << std::endl;
+            << ", profile_sample_rate=" << opt.profile_sample_rate << std::endl;
   coro_io::get_global_executor(opt.client_threads);
   std::string payload(opt.payload_size, 'x');
   if (opt.transport == "raw") {
     syncAwait(run_raw_client(opt, payload));
-    if (opt.profile) coro_io::urma_benchmark_profile::print(std::cout);
+    if (opt.profile)
+      coro_io::urma_benchmark_profile::print(std::cout);
     return 0;
   }
   if (opt.use_urma) {
     configure_urma_rpc_env(opt);
-    if (!init_global_urma(opt)) return 1;
+    if (!init_global_urma(opt))
+      return 1;
   }
   std::cout << (opt.use_urma ? "URMA" : "TCP")
-            << " RPC benchmark client target " << opt.host << ":"
-            << opt.port << ", mode=" << opt.mode
-            << ", rpc=" << opt.rpc
+            << " RPC benchmark client target " << opt.host << ":" << opt.port
+            << ", mode=" << opt.mode << ", rpc=" << opt.rpc
             << ", payload=" << opt.payload_size
             << ", buffer_size=" << opt.buffer_size
             << ", queue_depth=" << opt.queue_depth << std::endl;
@@ -852,7 +857,8 @@ int run_client(const options_t& opt) {
   if (opt.mode == "throughput" || opt.mode == "both") {
     syncAwait(run_throughput(opt, payload));
   }
-  if (opt.profile) coro_io::urma_benchmark_profile::print(std::cout);
+  if (opt.profile)
+    coro_io::urma_benchmark_profile::print(std::cout);
   return 0;
 }
 
@@ -861,11 +867,11 @@ int main(int argc, char** argv) {
     std::cout.setf(std::ios::unitbuf);
     std::cerr.setf(std::ios::unitbuf);
     auto opt = parse_options(argc, argv);
-    coro_io::urma_benchmark_profile::configure(false,
-                                               opt.profile_sample_rate);
+    coro_io::urma_benchmark_profile::configure(false, opt.profile_sample_rate);
     easylog::logger<>::instance().set_min_severity(opt.log_level);
     easylog::logger<>::instance().set_async(false);
-    if (opt.role == "server") return run_server(opt);
+    if (opt.role == "server")
+      return run_server(opt);
     return run_client(opt);
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";

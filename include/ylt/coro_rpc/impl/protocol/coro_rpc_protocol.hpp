@@ -140,9 +140,9 @@ struct coro_rpc_protocol {
   static async_simple::coro::Lazy<std::error_code> read_payload(
       Socket& socket, req_header& req_head, std::string& buffer,
       coro_io::heterogeneous_buffer& attachment) {
-    co_return co_await read_payload(socket, req_head, buffer, attachment,
-                                    static_cast<context_info_t<
-                                        coro_rpc_protocol>*>(nullptr));
+    co_return co_await read_payload(
+        socket, req_head, buffer, attachment,
+        static_cast<context_info_t<coro_rpc_protocol>*>(nullptr));
   }
 
   template <typename Socket>
@@ -159,13 +159,15 @@ struct coro_rpc_protocol {
           if (!buffer.empty()) {
             auto [body_ec, ignored] =
                 co_await coro_io::async_read(socket, asio::buffer(buffer));
-            if (body_ec) co_return body_ec;
+            if (body_ec) 
+              co_return body_ec;
           }
           attachment = coro_io::heterogeneous_buffer{};
           auto [attachment_ec, views] =
               co_await coro_io::detail::async_urma_read_views(
                   socket, req_head.attach_length);
-          if (attachment_ec) co_return attachment_ec;
+          if (attachment_ec) 
+            co_return attachment_ec;
           context_info->set_request_attachment_views(std::move(views));
           co_return std::error_code{};
         }

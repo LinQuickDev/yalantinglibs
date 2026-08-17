@@ -15,23 +15,24 @@
  */
 #pragma once
 
-#include <atomic>
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
-#include <queue>
 #include <mutex>
+#include <queue>
 #include <system_error>
-#include <sys/mman.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "ylt/easylog.hpp"
@@ -69,7 +70,8 @@ class urma_buffer_pool_t {
   size_t free_buffer_count() const;
 #ifdef YLT_ENABLE_URMA
   urma_seg_t seg() const {
-    return seg_ ? reinterpret_cast<urma_target_seg_t*>(seg_)->seg : urma_seg_t{};
+    return seg_ ? reinterpret_cast<urma_target_seg_t*>(seg_)->seg
+                : urma_seg_t{};
   }
 #endif
   size_t outstanding_buffer_count() const {
@@ -115,7 +117,7 @@ class urma_buffer_pool_t {
 // ============= Implementation (inline in header) =============
 
 inline urma_buffer_pool_t::urma_buffer_pool_t(void* ctx, size_t buffer_size,
-                                             size_t buffer_count)
+                                              size_t buffer_count)
     : ctx_(ctx), config_({buffer_size, buffer_count, -1}) {
   init_buffers();
 }
@@ -128,7 +130,9 @@ inline bool urma_buffer_pool_t::init_buffers() {
   long page_size_value = ::sysconf(_SC_PAGESIZE);
   size_t page_size =
       page_size_value > 0 ? static_cast<size_t>(page_size_value) : 4096;
-  if (config_.buffer_size == 0 || config_.buffer_count == 0) return false;
+  if (config_.buffer_size == 0 || config_.buffer_count == 0)
+    return false;
+
   if (config_.buffer_count >
       std::numeric_limits<size_t>::max() / config_.buffer_size) {
     ELOG_ERROR << "URMA buffer pool size overflow: buffer_size="
@@ -137,8 +141,7 @@ inline bool urma_buffer_pool_t::init_buffers() {
     return false;
   }
   auto requested_size = config_.buffer_size * config_.buffer_count;
-  allocation_size_ =
-      (requested_size + page_size - 1) / page_size * page_size;
+  allocation_size_ = (requested_size + page_size - 1) / page_size * page_size;
   base_addr_ = ::mmap(nullptr, allocation_size_, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (base_addr_ == MAP_FAILED) {
@@ -196,15 +199,13 @@ inline bool urma_buffer_pool_t::init_buffers() {
 #else
     auto* buffer_seg = seg_;
 #endif
-    buffers_.push_back(
-        urma_buffer_t(addr, config_.buffer_size, buffer_seg));
+    buffers_.push_back(urma_buffer_t(addr, config_.buffer_size, buffer_seg));
     free_indices_[shard_for_index(i)].push(i);
   }
 
-  ELOG_INFO << "URMA buffer pool: " << buffers_.size()
-            << " buffers of " << config_.buffer_size
-            << " bytes, one registered segment of " << allocation_size_
-            << " bytes, init_cost_us="
+  ELOG_INFO << "URMA buffer pool: " << buffers_.size() << " buffers of "
+            << config_.buffer_size << " bytes, one registered segment of "
+            << allocation_size_ << " bytes, init_cost_us="
             << (std::chrono::steady_clock::now() - init_begin) /
                    std::chrono::microseconds(1);
   return !buffers_.empty();
@@ -242,10 +243,12 @@ inline urma_buffer_t urma_buffer_pool_t::get_buffer(int gpu_id) {
   for (size_t i = 0; i < shard_count_; ++i) {
     auto shard = (start + i) % shard_count_;
     std::lock_guard<std::mutex> lock(mutexes_[shard]);
-    if (free_indices_[shard].empty()) continue;
+    if (free_indices_[shard].empty())
+      continue;
     size_t idx = free_indices_[shard].front();
     free_indices_[shard].pop();
-    if (idx < in_use_.size()) in_use_[idx] = 1;
+    if (idx < in_use_.size())
+      in_use_[idx] = 1;
     outstanding_buffers_++;
     return buffers_[idx];
   }
@@ -262,7 +265,8 @@ inline urma_buffer_t urma_buffer_pool_t::get_buffer(int gpu_id) {
 
 inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
 #ifdef YLT_ENABLE_URMA
-  if (!buffer) return;
+  if (!buffer)
+    return;
   auto* base = static_cast<char*>(base_addr_);
   auto* addr = static_cast<char*>(buffer.addr);
   if (base && addr >= base && addr < base + allocation_size_) {
@@ -278,7 +282,8 @@ inline void urma_buffer_pool_t::return_buffer(urma_buffer_t& buffer) {
           buffer = urma_buffer_t{};
           return;
         }
-        if (index < in_use_.size()) in_use_[index] = 0;
+        if (index < in_use_.size())
+          in_use_[index] = 0;
         free_indices_[shard].push(index);
         if (outstanding_buffers_.load(std::memory_order_relaxed) > 0)
           outstanding_buffers_--;
