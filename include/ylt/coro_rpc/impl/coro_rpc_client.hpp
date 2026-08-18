@@ -1910,9 +1910,8 @@ class coro_rpc_client {
           rpc_error{coro_rpc::errc::serial_number_conflict});
     }
     auto result = co_await control_->socket_wrapper_.visit([&](auto &socket) {
-      return send_request_for_impl<func>(
-          socket, config, id, handler->timer(),
-          std::forward<Args>(args)...);
+      return send_request_for_impl<func>(socket, config, id, handler->timer(),
+                                         std::forward<Args>(args)...);
     });
     if (!result) {
       {
@@ -1928,12 +1927,13 @@ class coro_rpc_client {
     // Ensure at most one recv coroutine runs per connection.
     if (!control_->recv_running_.exchange(true)) {
       control_->socket_wrapper_.visit([control_ = control_](auto &socket) {
-        recv(control_, socket).start([](auto &&) {});
+        recv(control_, socket).start([](auto &&) {
+        });
       });
     }
     co_return deserialize_rpc_result<rpc_return_t>(
-        std::move(future), std::weak_ptr<control_t>{control_},
-        std::move(guard), config_.client_id);
+        std::move(future), std::weak_ptr<control_t>{control_}, std::move(guard),
+        config_.client_id);
   }
 
   uint32_t get_pipeline_size() const noexcept {

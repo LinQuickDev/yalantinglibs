@@ -113,6 +113,19 @@ TEST_CASE("urma rpc env config parsing uses defaults for invalid values") {
   CHECK(config.jfs_priority == 7);
 }
 
+TEST_CASE("urma priority selection follows transport type capability") {
+  urma_device_attr_t attr{};
+  attr.dev_cap.priority_info[3].tp_type.bs.rtp = 1;
+  attr.dev_cap.priority_info[7].tp_type.bs.ctp = 1;
+  attr.dev_cap.priority_info[11].tp_type.bs.utp = 1;
+
+  using state_t = coro_io::detail::urma_socket_shared_state_t;
+  CHECK(state_t::get_priority(attr, 3, URMA_RTP).value() == 3);
+  CHECK(state_t::get_priority(attr, 3, URMA_CTP).value() == 7);
+  CHECK(state_t::get_priority(attr, 3, URMA_UTP).value() == 11);
+  CHECK_FALSE(state_t::get_priority(attr, 16, URMA_RTP).has_value());
+}
+
 TEST_CASE("urma rpc env event mode defaults to on and can be overridden") {
   {
     scoped_env_var enable("URMA_RPC_ENABLE", "1");

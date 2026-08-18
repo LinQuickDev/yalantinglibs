@@ -875,7 +875,7 @@ std::string context_info_t<rpc_protocol>::release_request_attachment() {
   if SP_UNLIKELY (!str) {
     throw std::logic_error(
         "call release_request_attachment, but attachment is in gpu memory, you "
-      "need call release_resp_attachment2()");
+        "need call release_resp_attachment2()");
   }
 #endif
   req_attachment_views_.clear();
