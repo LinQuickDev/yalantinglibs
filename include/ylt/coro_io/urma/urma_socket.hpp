@@ -47,6 +47,7 @@
 #include "ylt/coro_io/coro_io.hpp"
 #include "ylt/coro_io/data_view.hpp"
 #include "ylt/coro_io/detail/circle_buffer.hpp"
+#include "ylt/coro_io/urma/urma_benchmark_profile.hpp"
 #include "ylt/coro_io/urma/urma_buffer.hpp"
 #include "ylt/coro_io/urma/urma_device.hpp"
 #include "ylt/easylog.hpp"
@@ -141,9 +142,9 @@ struct urma_socket_shared_state_t
     }
   }
 
-  static std::optional<uint8_t> get_priority(
-      const urma_device_attr_t& attr, uint8_t requested_priority,
-      urma_tp_type_t tp_type) {
+  static std::optional<uint8_t> get_priority(const urma_device_attr_t& attr,
+                                             uint8_t requested_priority,
+                                             urma_tp_type_t tp_type) {
     constexpr uint8_t max_priority = 15;
     const auto& priority_info = attr.dev_cap.priority_info;
     if (requested_priority > max_priority)
