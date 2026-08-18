@@ -122,6 +122,8 @@ class urma_device_manager {
  private:
   urma_device_manager() = default;
   ~urma_device_manager();
+  bool init_locked();
+  mutable std::mutex mutex_;
   bool initialized_ = false;
   std::vector<std::shared_ptr<urma_device_wrapper_t>> devices_;
   std::shared_ptr<urma_device_wrapper_t> global_device_;
@@ -345,6 +347,15 @@ inline urma_device_manager::~urma_device_manager() {
 
 inline bool urma_device_manager::init() {
 #ifdef YLT_ENABLE_URMA
+  std::lock_guard lock(mutex_);
+  return init_locked();
+#else
+  return false;
+#endif
+}
+
+inline bool urma_device_manager::init_locked() {
+#ifdef YLT_ENABLE_URMA
   if (initialized_)
     return true;
   urma_init_attr_t init_attr = {};
@@ -366,7 +377,8 @@ inline bool urma_device_manager::init() {
 inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
     const std::string& device_name, int eid_index) {
 #ifdef YLT_ENABLE_URMA
-  if (!initialized_ && !init())
+  std::lock_guard lock(mutex_);
+  if (!initialized_ && !init_locked())
     return nullptr;
 
   for (auto& dev : devices_) {
@@ -392,7 +404,8 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
 inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
     const urma_init_config_t& config) {
 #ifdef YLT_ENABLE_URMA
-  if (!initialized_ && !init())
+  std::lock_guard lock(mutex_);
+  if (!initialized_ && !init_locked())
     return nullptr;
 
   // Reuse an existing device matching dev_name + eid_index if one was already
@@ -424,10 +437,11 @@ inline std::shared_ptr<urma_device_wrapper_t> urma_device_manager::get_device(
 inline std::vector<std::shared_ptr<urma_device_wrapper_t>>
 urma_device_manager::get_all_devices() {
 #ifdef YLT_ENABLE_URMA
+  std::lock_guard lock(mutex_);
   if (!devices_.empty())
     return devices_;
-  if (!initialized_)
-    init();
+  if (!initialized_ && !init_locked())
+    return {};
 
   int num_devices = 0;
   ::urma_device_t** urma_dev_list = urma_get_device_list(&num_devices);
@@ -451,8 +465,8 @@ urma_device_manager::get_all_devices() {
 
 inline std::shared_ptr<urma_device_wrapper_t>
 urma_device_manager::get_global_device() {
-  if (!global_device_)
-    get_all_devices();
+  get_all_devices();
+  std::lock_guard lock(mutex_);
   return global_device_;
 }
 

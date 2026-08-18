@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,7 @@
 #include <unordered_map>
 #include <utility>
 #include <variant>
+#include <vector>
 #include <ylt/easylog.hpp>
 
 #include "asio/buffer.hpp"
@@ -1341,7 +1343,6 @@ class coro_rpc_client {
     header.magic = coro_rpc_protocol::magic_number;
     header.function_id = func_id<func>();
     header.attach_length = attachment_length;
-    id = request_id_++;
     ELOG_TRACE << "call rpc function name: " << get_func_name<func>()
                << ", send request ID: " << id
                << ", client_id: " << config_.client_id;
@@ -1486,15 +1487,23 @@ class coro_rpc_client {
           promise_(std::move(promise)),
           response_attachment_buffer_(buffer) {}
     coro_io::data_view &get_buffer() { return response_attachment_buffer_; }
+    coro_io::period_timer &timer() { return *timer_; }
     void operator()(resp_body &&buffer, uint8_t rpc_errc) {
+      if (completed_.exchange(true, std::memory_order_acq_rel))
+        return;
       timer_->cancel();
       promise_.setValue(async_rpc_raw_result{async_rpc_raw_result_value_type{
           std::move(buffer), response_attachment_buffer_, rpc_errc}});
     }
     void local_error(std::error_code &ec) {
+      if (completed_.exchange(true, std::memory_order_acq_rel))
+        return;
       timer_->cancel();
       promise_.setValue(async_rpc_raw_result{ec});
     }
+
+   private:
+    std::atomic<bool> completed_ = false;
   };
   struct control_t {
 #ifdef GENERATE_BENCHMARK_DATA
@@ -1504,7 +1513,9 @@ class coro_rpc_client {
     std::atomic<bool> has_closed_ = false;
     coro_io::ExecutorWrapper<> *executor_;
     coro_io::socket_wrapper_t socket_wrapper_;
-    std::unordered_map<uint32_t, handler_t> response_handler_table_;
+    std::mutex response_handler_mtx_;
+    std::unordered_map<uint32_t, std::shared_ptr<handler_t>>
+        response_handler_table_;
     resp_body resp_buffer_;
     std::atomic<uint32_t> recving_cnt_ = 0;
     std::atomic<bool> recv_running_ = false;
@@ -1603,10 +1614,14 @@ class coro_rpc_client {
     if (controller->is_timeout_) {
       errc = std::make_error_code(std::errc::timed_out);
     }
-    for (auto &e : controller->response_handler_table_) {
-      e.second.local_error(errc);
+    std::vector<std::shared_ptr<handler_t>> handlers;
+    {
+      std::lock_guard lock(controller->response_handler_mtx_);
+      for (auto &entry : controller->response_handler_table_)
+        handlers.push_back(std::move(entry.second));
+      controller->response_handler_table_.clear();
     }
-    controller->response_handler_table_.clear();
+    for (auto &handler : handlers) handler->local_error(errc);
   }
   template <typename Socket>
   static async_simple::coro::Lazy<void> recv(
@@ -1633,8 +1648,14 @@ class coro_rpc_client {
         }
         break;
       }
-      auto iter = controller->response_handler_table_.find(header.seq_num);
-      if (iter == controller->response_handler_table_.end()) {
+      std::shared_ptr<handler_t> handler;
+      {
+        std::lock_guard lock(controller->response_handler_mtx_);
+        auto iter = controller->response_handler_table_.find(header.seq_num);
+        if (iter != controller->response_handler_table_.end())
+          handler = iter->second;
+      }
+      if (!handler) {
         ELOG_ERROR << "unexists request ID: " << header.seq_num
                    << ". close the socket"
                    << ", client_id: " << controller->client_id;
@@ -1659,7 +1680,7 @@ class coro_rpc_client {
         controller->resp_buffer_.resp_attachment_buf_.clear();
       }
       else {
-        auto &attachment_buffer = iter->second.get_buffer();
+        auto &attachment_buffer = handler->get_buffer();
         if (attachment_buffer.size() < header.attach_length) {
           // allocate attachment buffer
           if (attachment_buffer.size()) [[unlikely]] {
@@ -1732,13 +1753,22 @@ class coro_rpc_client {
       ELOG_DEBUG << "recv rpc response, cost time = " << cost_time
                  << "us, request ID: " << header.seq_num
                  << ", client_id: " << controller->client_id;
-      iter->second(std::move(controller->resp_buffer_), header.err_code);
-      controller->response_handler_table_.erase(iter);
-      if (controller->response_handler_table_.empty()) {
+      (*handler)(std::move(controller->resp_buffer_), header.err_code);
+      bool has_handlers = false;
+      {
+        std::lock_guard lock(controller->response_handler_mtx_);
+        controller->response_handler_table_.erase(header.seq_num);
+        has_handlers = !controller->response_handler_table_.empty();
+      }
+      if (!has_handlers) {
         controller->recv_running_.store(false, std::memory_order_release);
         // Re-check: a new send_request may have inserted a handler between
         // the empty() check and the store. If so, restart the recv loop.
-        if (!controller->response_handler_table_.empty()) {
+        {
+          std::lock_guard lock(controller->response_handler_mtx_);
+          has_handlers = !controller->response_handler_table_.empty();
+        }
+        if (has_handlers) {
           controller->recv_running_.store(true, std::memory_order_release);
           continue;
         }
@@ -1859,49 +1889,51 @@ class coro_rpc_client {
       config.request_timeout_duration = config_.request_timeout_duration;
     }
     assert(config.request_timeout_duration.has_value());
+    id = request_id_++;
 
     auto timer = std::make_unique<coro_io::period_timer>(
         control_->executor_->get_asio_executor());
+    async_simple::Promise<async_rpc_raw_result> promise;
+    auto future = promise.getFuture();
+    auto handler = std::make_shared<handler_t>(
+        std::move(timer), std::move(promise),
+        coro_io::data_view{config.resp_attachment_buf,
+                           config.resp_attachment_buf_gpu_id});
+    bool is_ok = false;
+    {
+      std::lock_guard lock(control_->response_handler_mtx_);
+      is_ok = control_->response_handler_table_.try_emplace(id, handler).second;
+    }
+    if (!is_ok) [[unlikely]] {
+      close();
+      co_return build_failed_rpc_result<rpc_return_t>(
+          rpc_error{coro_rpc::errc::serial_number_conflict});
+    }
     auto result = co_await control_->socket_wrapper_.visit([&](auto &socket) {
-      return send_request_for_impl<func>(socket, config, id, *timer,
-                                         std::forward<Args>(args)...);
+      return send_request_for_impl<func>(
+          socket, config, id, handler->timer(),
+          std::forward<Args>(args)...);
     });
     if (!result) {
-      async_simple::Promise<async_rpc_raw_result> promise;
-      auto future = promise.getFuture();
-      auto &&[_, is_ok] = control_->response_handler_table_.try_emplace(
-          id, std::move(timer), std::move(promise),
-          coro_io::data_view{config.resp_attachment_buf,
-                             config.resp_attachment_buf_gpu_id});
-      if (!is_ok) [[unlikely]] {
-        close();
-        co_return build_failed_rpc_result<rpc_return_t>(
-            rpc_error{coro_rpc::errc::serial_number_conflict});
+      {
+        std::lock_guard lock(control_->response_handler_mtx_);
+        control_->response_handler_table_.erase(id);
       }
-      else {
-        // Ensure at most one recv coroutine runs per connection.
-        // The previous is_empty check on response_handler_table_ was racy:
-        // multiple send_request coroutines could observe is_empty == true
-        // concurrently and each start a recv coroutine, causing multiple
-        // concurrent readers on the same URMA socket.
-        if (!control_->recv_running_.exchange(true)) {
-          control_->socket_wrapper_.visit([control_ = control_](auto &socket) {
-            recv(control_, socket).start([](auto &&) {
-              // recv_running_ is cleared inside the recv coroutine itself,
-              // so we don't reset it here. This avoids a race where the
-              // recv coroutine has decided to exit but a new handler was
-              // inserted before recv_running_ was cleared.
-            });
-          });
-        }
-        co_return deserialize_rpc_result<rpc_return_t>(
-            std::move(future), std::weak_ptr<control_t>{control_},
-            std::move(guard), config_.client_id);
+      if (handler) {
+        auto error = result;
+        handler->local_error(error);
       }
-    }
-    else {
       co_return build_failed_rpc_result<rpc_return_t>(std::move(result));
     }
+    // Ensure at most one recv coroutine runs per connection.
+    if (!control_->recv_running_.exchange(true)) {
+      control_->socket_wrapper_.visit([control_ = control_](auto &socket) {
+        recv(control_, socket).start([](auto &&) {});
+      });
+    }
+    co_return deserialize_rpc_result<rpc_return_t>(
+        std::move(future), std::weak_ptr<control_t>{control_},
+        std::move(guard), config_.client_id);
   }
 
   uint32_t get_pipeline_size() const noexcept {

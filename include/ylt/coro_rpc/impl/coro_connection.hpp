@@ -61,7 +61,7 @@ struct context_info_t {
   std::shared_ptr<coro_connection> conn_;
   typename rpc_protocol::req_header req_head_;
   std::string req_body_;
-  coro_io::heterogeneous_buffer req_attachment_;
+  mutable coro_io::heterogeneous_buffer req_attachment_;
   std::vector<coro_io::owned_data_view> req_attachment_views_;
   std::function<coro_io::data_view()> resp_attachment_ = [] {
     return coro_io::data_view{std::string_view{}, -1};
@@ -109,15 +109,7 @@ struct context_info_t {
   void set_request_attachment_views(
       std::vector<coro_io::owned_data_view> views) noexcept {
     req_attachment_views_ = std::move(views);
-    std::size_t size = 0;
-    for (const auto &view : req_attachment_views_) size += view.size();
-    req_attachment_ = coro_io::heterogeneous_buffer(size);
-    auto *data = req_attachment_.data();
-    std::size_t offset = 0;
-    for (const auto &view : req_attachment_views_) {
-      std::memcpy(data + offset, view.data(), view.size());
-      offset += view.size();
-    }
+    req_attachment_ = {};
   }
   std::string release_request_attachment();
   coro_io::heterogeneous_buffer release_request_attachment2();
@@ -848,12 +840,24 @@ void context_info_t<rpc_protocol>::set_response_attachment2(
 
 template <typename rpc_protocol>
 std::string_view context_info_t<rpc_protocol>::get_request_attachment() const {
+  if (req_attachment_.empty() && !req_attachment_views_.empty()) {
+    std::size_t size = 0;
+    for (const auto &view : req_attachment_views_) size += view.size();
+    req_attachment_ = coro_io::heterogeneous_buffer(size);
+    auto *data = req_attachment_.data();
+    std::size_t offset = 0;
+    for (const auto &view : req_attachment_views_) {
+      std::memcpy(data + offset, view.data(), view.size());
+      offset += view.size();
+    }
+  }
   return req_attachment_;
 }
 
 template <typename rpc_protocol>
 coro_io::data_view context_info_t<rpc_protocol>::get_request_attachment2()
     const {
+  get_request_attachment();
   return req_attachment_;
 }
 
@@ -865,20 +869,24 @@ context_info_t<rpc_protocol>::get_request_attachment_views() const noexcept {
 
 template <typename rpc_protocol>
 std::string context_info_t<rpc_protocol>::release_request_attachment() {
+  get_request_attachment();
   auto str = req_attachment_.get_string();
 #ifdef YLT_ENABLE_CUDA
   if SP_UNLIKELY (!str) {
     throw std::logic_error(
         "call release_request_attachment, but attachment is in gpu memory, you "
-        "need call release_resp_attachment2()");
+      "need call release_resp_attachment2()");
   }
 #endif
+  req_attachment_views_.clear();
   return std::move(*str);
 }
 
 template <typename rpc_protocol>
 coro_io::heterogeneous_buffer
 context_info_t<rpc_protocol>::release_request_attachment2() {
+  get_request_attachment();
+  req_attachment_views_.clear();
   return std::move(req_attachment_);
 }
 

@@ -141,40 +141,53 @@ struct urma_socket_shared_state_t
     }
   }
 
-  static std::optional<uint8_t> get_ctp_priority(const urma_device_attr_t& attr,
-                                                 uint8_t requested_priority) {
+  static std::optional<uint8_t> get_priority(
+      const urma_device_attr_t& attr, uint8_t requested_priority,
+      urma_tp_type_t tp_type) {
     constexpr uint8_t max_priority = 15;
     const auto& priority_info = attr.dev_cap.priority_info;
     if (requested_priority > max_priority)
       return std::nullopt;
+    const auto supports_tp = [tp_type](const auto& info) {
+      switch (tp_type) {
+        case URMA_RTP:
+          return info.tp_type.bs.rtp != 0;
+        case URMA_CTP:
+          return info.tp_type.bs.ctp != 0;
+        case URMA_UTP:
+          return info.tp_type.bs.utp != 0;
+      }
+      return false;
+    };
     bool has_priority_info = false;
     for (uint8_t priority = 0; priority <= max_priority; ++priority) {
       has_priority_info |= priority_info[priority].tp_type.value != 0;
     }
-    if (!has_priority_info ||
-        priority_info[requested_priority].tp_type.bs.ctp != 0) {
+    if (!has_priority_info || supports_tp(priority_info[requested_priority])) {
       return requested_priority;
     }
     for (uint8_t priority = 0; priority <= max_priority; ++priority) {
-      if (priority_info[priority].tp_type.bs.ctp != 0)
+      if (supports_tp(priority_info[priority]))
         return priority;
     }
     return std::nullopt;
   }
 
   bool init(std::size_t cq_size, std::size_t send_buffer_cnt, bool event_mode,
-            uint8_t jfs_priority) {
+            uint8_t jfs_priority, urma_tp_type_t tp_type) {
     const auto& cap = device_->attr().dev_cap;
-    auto ctp_priority = get_ctp_priority(device_->attr(), jfs_priority);
-    if (!ctp_priority) {
-      ELOG_ERROR << "URMA device has no priority supporting CTP";
+    auto priority = get_priority(device_->attr(), jfs_priority, tp_type);
+    if (!priority) {
+      ELOG_ERROR << "URMA device has no priority supporting transport type "
+                 << static_cast<unsigned>(tp_type);
       return false;
     }
-    if (*ctp_priority != jfs_priority) {
+    if (*priority != jfs_priority) {
       ELOG_WARN << "URMA priority " << static_cast<unsigned>(jfs_priority)
-                << " does not support CTP; use priority "
-                << static_cast<unsigned>(*ctp_priority);
-      jfs_priority = *ctp_priority;
+                << " does not support transport type "
+                << static_cast<unsigned>(tp_type) << "; use priority "
+                << static_cast<unsigned>(*priority);
+      jfs_priority = *priority;
     }
     ELOG_INFO << "URMA resource init: device=" << device_->name()
               << ", eid=" << device_->eid_string()
@@ -601,7 +614,6 @@ struct urma_socket_shared_state_t
     else {
       ELOG_INFO << "URMA starting timer-based busy poller (fallback)";
       poll_once();
-      start_polling();
     }
   }
 
@@ -1022,7 +1034,7 @@ class urma_socket_t {
     state_->busy_poll_budget_ = conf_.busy_poll_budget;
     state_->idle_poll_interval_ = conf_.poll_interval;
     if (!state_->init(conf_.cq_size, conf_.send_buffer_cnt, conf_.event_mode,
-                      conf_.jfs_priority)) {
+                      conf_.jfs_priority, conf_.tp_type)) {
       auto stage = state_->init_stage_;
       auto error = state_->init_error_;
       ELOG_ERROR << "URMA socket resource initialization failed: stage="
