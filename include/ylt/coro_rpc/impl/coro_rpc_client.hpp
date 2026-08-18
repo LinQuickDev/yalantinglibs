@@ -1913,14 +1913,13 @@ class coro_rpc_client {
       return send_request_for_impl<func>(socket, config, id, handler->timer(),
                                          std::forward<Args>(args)...);
     });
-    if (!result) {
+    if (result) {
       {
         std::lock_guard lock(control_->response_handler_mtx_);
         control_->response_handler_table_.erase(id);
       }
       if (handler) {
-        auto error = result;
-        handler->local_error(error);
+        handler->timer().cancel();
       }
       co_return build_failed_rpc_result<rpc_return_t>(std::move(result));
     }
