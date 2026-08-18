@@ -126,6 +126,12 @@ TEST_CASE("urma priority selection follows transport type capability") {
   CHECK_FALSE(state_t::get_priority(attr, 16, URMA_RTP).has_value());
 }
 
+TEST_CASE("urma buffer pool exposes initialization failure") {
+  coro_io::urma_buffer_pool_t pool(nullptr, 0, 1);
+  CHECK_FALSE(pool.is_valid());
+  CHECK(pool.total_buffer_count() == 0);
+}
+
 TEST_CASE("urma rpc env event mode defaults to on and can be overridden") {
   {
     scoped_env_var enable("URMA_RPC_ENABLE", "1");

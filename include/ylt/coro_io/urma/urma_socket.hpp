@@ -677,9 +677,9 @@ struct urma_socket_shared_state_t
     remote_seg_.reset();
     remote_jetty_.reset();
     jetty_.reset();
-    jfce_.reset();
     jfr_.reset();
     jfc_.reset();
+    jfce_.reset();
   }
 
   ExecutorWrapper<>* executor_;

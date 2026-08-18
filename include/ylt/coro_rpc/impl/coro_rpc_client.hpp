@@ -1769,8 +1769,11 @@ class coro_rpc_client {
           has_handlers = !controller->response_handler_table_.empty();
         }
         if (has_handlers) {
-          controller->recv_running_.store(true, std::memory_order_release);
-          continue;
+          bool expected = false;
+          if (controller->recv_running_.compare_exchange_strong(
+                  expected, true, std::memory_order_acq_rel)) {
+            continue;
+          }
         }
         co_return;
       }

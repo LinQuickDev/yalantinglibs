@@ -64,8 +64,9 @@ class urma_buffer_pool_t {
   urma_buffer_t get_buffer(int gpu_id = -1);
   void return_buffer(urma_buffer_t& buffer);
 
+  bool is_valid() const noexcept { return init_ok_; }
   size_t buffer_size() const { return config_.buffer_size; }
-  size_t total_buffer_count() const { return config_.buffer_count; }
+  size_t total_buffer_count() const { return buffers_.size(); }
   size_t total_memory_size() const { return allocation_size_; }
   size_t free_buffer_count() const;
 #ifdef YLT_ENABLE_URMA
@@ -101,6 +102,7 @@ class urma_buffer_pool_t {
   std::vector<urma_target_seg_t> slice_segs_;
 #endif
   std::vector<uint8_t> in_use_;
+  bool init_ok_ = false;
   static constexpr size_t shard_count_ = 64;
   size_t shard_for_index(size_t index) const noexcept {
     return index % shard_count_;
@@ -119,7 +121,7 @@ class urma_buffer_pool_t {
 inline urma_buffer_pool_t::urma_buffer_pool_t(void* ctx, size_t buffer_size,
                                               size_t buffer_count)
     : ctx_(ctx), config_({buffer_size, buffer_count, -1}) {
-  init_buffers();
+  init_ok_ = init_buffers();
 }
 
 inline bool urma_buffer_pool_t::init_buffers() {

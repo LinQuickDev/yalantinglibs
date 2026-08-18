@@ -174,9 +174,12 @@ inline bool urma_device_wrapper_t::configure_buffer_pool(
       return false;
     }
   }
-  buffer_pool_ = std::make_shared<urma_buffer_pool_t>(context_, buffer_size,
-                                                      requested_buffer_count);
-  return buffer_pool_->total_buffer_count() != 0;
+  auto buffer_pool = std::make_shared<urma_buffer_pool_t>(
+      context_, buffer_size, requested_buffer_count);
+  if (!buffer_pool->is_valid())
+    return false;
+  buffer_pool_ = std::move(buffer_pool);
+  return true;
 }
 
 inline bool urma_device_wrapper_t::init(const std::string& device_name,
