@@ -109,7 +109,7 @@ graph TB
 ## 五、当前实现状态
 
 - ✅ `urma_socket_t`、`urma_device`、`urma_buffer_pool`、`urma_rpc_env` 已在主分支可用（含使用文档 `website/docs/public/urma_rpc_usage.html`）
-- ✅ 环境变量自动使能与 TCP 回退（含单测 `test_urma_rpc_env.cpp`）
+- ✅ 环境变量自动使能与 TCP 回退（含单测 `test_urma_rpc.cpp`）
 - ✅ coro_rpc client/server 集成、magic byte 升级路径、attachment 零拷贝
 - ✅ Poll 模式 benchmark 已产出（见 4.2 节）
 

@@ -132,6 +132,41 @@ TEST_CASE("urma buffer pool exposes initialization failure") {
   CHECK(pool.total_buffer_count() == 0);
 }
 
+TEST_CASE("urma client init recovers after failure") {
+  auto executor = coro_io::get_global_executor();
+  coro_io::urma_socket_t::config_t valid_config;
+  bool found_usable_device = false;
+  for (const auto &device :
+       coro_io::urma_device_manager::instance().get_all_devices()) {
+    auto pool = device->get_buffer_pool();
+    if (!pool)
+      continue;
+    valid_config.device_name = device->name();
+    valid_config.eid_index = device->eid_index();
+    valid_config.buffer_size = static_cast<uint32_t>(pool->buffer_size());
+    valid_config.max_memory_usage = pool->total_memory_size();
+    valid_config.tp_type =
+        device->supports_rm_rtp() && !device->supports_rm_ctp() ? URMA_RTP
+                                                                : URMA_CTP;
+    valid_config.event_mode = false;
+    coro_io::socket_wrapper_t probe(executor);
+    if (probe.init_client(valid_config)) {
+      found_usable_device = true;
+      break;
+    }
+  }
+  if (!found_usable_device)
+    return;
+
+  coro_io::socket_wrapper_t socket(executor);
+  auto invalid_config = valid_config;
+  invalid_config.device_name = "device_that_should_not_exist_for_test";
+  CHECK_FALSE(socket.init_client(invalid_config));
+  CHECK_FALSE(socket.init_ok());
+  REQUIRE(socket.init_client(valid_config));
+  CHECK(socket.init_ok());
+}
+
 TEST_CASE("urma rpc env event mode defaults to on and can be overridden") {
   {
     scoped_env_var enable("URMA_RPC_ENABLE", "1");

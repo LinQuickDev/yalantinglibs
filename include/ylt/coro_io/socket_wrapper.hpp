@@ -198,6 +198,7 @@ struct socket_wrapper_t {
       init_ok_ = false;
       return false;
     }
+    init_ok_ = true;
     return true;
   }
 #endif

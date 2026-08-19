@@ -115,7 +115,7 @@ export URMA_RPC_EID_INDEX=0
 | `URMA_RPC_BUSY_POLL_BUDGET` | 事件唤醒后的忙轮询次数 |
 | `URMA_RPC_POLL_INTERVAL` | 轮询间隔，单位微秒 |
 
-实现位于 `include/ylt/coro_io/urma/urma_rpc_env.hpp`，行为测试位于 `src/coro_rpc/tests/test_urma_rpc_env.cpp`。
+实现位于 `include/ylt/coro_io/urma/urma_rpc_env.hpp`，行为测试位于 `src/coro_rpc/tests/test_urma_rpc.cpp`。
 
 ## 5. URMA 接口
 

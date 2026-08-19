@@ -12,7 +12,7 @@ set(TEST_SRCS
         test_parallel.cpp
         test_client_filter.cpp
         test_abi_compatible.cpp
-        test_urma_rpc_env.cpp
+        test_urma_rpc.cpp
         )
 if(YLT_ENABLE_ND)
         list(APPEND TEST_SRCS test_networkdirect_rpc.cpp)
