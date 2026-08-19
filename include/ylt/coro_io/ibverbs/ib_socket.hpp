@@ -37,6 +37,7 @@
 #include "asio/ip/tcp.hpp"
 #include "asio/posix/stream_descriptor.hpp"
 #include "async_simple/Future.h"
+#include "async_simple/Promise.h"
 #include "async_simple/Signal.h"
 #include "async_simple/coro/FutureAwaiter.h"
 #include "async_simple/coro/Lazy.h"
@@ -45,6 +46,7 @@
 #include "ib_device.hpp"
 #include "ib_error.hpp"
 #include "ylt/coro_io/coro_io.hpp"
+#include "ylt/coro_io/detail/circle_buffer.hpp"
 #include "ylt/coro_io/ibverbs/ib_buffer.hpp"
 #include "ylt/coro_io/io_context_pool.hpp"
 #include "ylt/easylog.hpp"
@@ -54,43 +56,6 @@
 namespace coro_io {
 namespace detail {
 struct ib_socket_shared_state_t;
-template <typename T>
-struct circle_buffer {
-  std::vector<T> queue;
-  uint32_t front_ = 0, end_ = 0;
-  bool may_empty = true;
-  circle_buffer(uint32_t size) {
-    assert(size > 0);
-    queue.resize(size);
-  }
-  void push(T&& elem) {
-    assert(!full());
-    may_empty = false;
-    end_ = (end_ + 1) % queue.size();
-    queue[end_] = std::move(elem);
-  }
-  T pop() {
-    assert(!empty());
-    front_ = (front_ + 1) % queue.size();
-    may_empty = true;
-    return std::move(queue[front_]);
-  }
-  T& back() { return queue[end_]; }
-  T& front() { return queue[(front_ + 1) % queue.size()]; }
-  bool full() const noexcept { return end_ == front_ && !may_empty; }
-  bool empty() const noexcept { return end_ == front_ && may_empty; }
-  std::size_t size() const noexcept {
-    if (front_ > end_) {
-      return queue.size() + end_ - front_;
-    }
-    else if (front_ == end_) {
-      return empty() ? 0 : queue.size();
-    }
-    else {
-      return end_ - front_;
-    }
-  }
-};
 struct ib_buffer_queue : public circle_buffer<ib_buffer_t> {
   using circle_buffer::circle_buffer;
   std::error_code post_recv_real(ibv_sge buffer,

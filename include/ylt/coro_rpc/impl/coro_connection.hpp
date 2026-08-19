@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
@@ -30,6 +31,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 #include <ylt/easylog.hpp>
 
 #include "asio/dispatch.hpp"
@@ -59,7 +61,8 @@ struct context_info_t {
   std::shared_ptr<coro_connection> conn_;
   typename rpc_protocol::req_header req_head_;
   std::string req_body_;
-  coro_io::heterogeneous_buffer req_attachment_;
+  mutable coro_io::heterogeneous_buffer req_attachment_;
+  std::vector<coro_io::owned_data_view> req_attachment_views_;
   std::function<coro_io::data_view()> resp_attachment_ = [] {
     return coro_io::data_view{std::string_view{}, -1};
   };
@@ -101,6 +104,13 @@ struct context_info_t {
   }
   std::string_view get_request_attachment() const;
   coro_io::data_view get_request_attachment2() const;
+  std::span<const coro_io::owned_data_view> get_request_attachment_views()
+      const noexcept;
+  void set_request_attachment_views(
+      std::vector<coro_io::owned_data_view> views) noexcept {
+    req_attachment_views_ = std::move(views);
+    req_attachment_ = {};
+  }
   std::string release_request_attachment();
   coro_io::heterogeneous_buffer release_request_attachment2();
   std::any &tag() noexcept;
@@ -211,6 +221,21 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       }
     }
 #endif
+#ifdef YLT_ENABLE_URMA
+    if constexpr (std::is_same_v<Socket,
+                                 coro_io::socket_wrapper_t::urma_socket_type>) {
+      reset_timer(0, "urma handshake");
+      auto ec = co_await socket.accept(magic_number);
+      magic_number = "";
+      cancel_timer(0, "urma handshake");
+      if (ec) [[unlikely]] {
+        ELOG_ERROR << "urma handshake failed: " << ec.message() << " conn_id "
+                   << conn_id_;
+        close();
+        co_return;
+      }
+    }
+#endif
     auto context_info = std::make_shared<context_info_t<rpc_protocol>>(
         router, shared_from_this());
     uint64_t req_id = 0;
@@ -268,11 +293,14 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
         }
         else {
           // reuse string buffer
+          context_info->req_attachment_views_.clear();
           context_info = std::make_shared<context_info_t<rpc_protocol>>(
               router, shared_from_this(), std::move(context_info->req_body_),
               std::move(context_info->req_attachment_));
         }
       }
+      context_info->req_attachment_views_.clear();
+      context_info->req_attachment_ = {};
       auto &req_head = context_info->req_head_;
       auto &body = context_info->req_body_;
       auto &req_attachment = context_info->req_attachment_;
@@ -293,8 +321,8 @@ class coro_connection : public std::enable_shared_from_this<coro_connection> {
       std::string_view payload;
       // rpc_protocol::buffer_type maybe from user, default from framework.
 
-      ec = co_await rpc_protocol::read_payload(socket, req_head, body,
-                                               req_attachment);
+      ec = co_await rpc_protocol::read_payload(
+          socket, req_head, body, req_attachment, context_info.get());
       cancel_timer(req_id, "recv client data");
       payload = std::string_view{body};
 
@@ -812,17 +840,36 @@ void context_info_t<rpc_protocol>::set_response_attachment2(
 
 template <typename rpc_protocol>
 std::string_view context_info_t<rpc_protocol>::get_request_attachment() const {
+  if (req_attachment_.empty() && !req_attachment_views_.empty()) {
+    std::size_t size = 0;
+    for (const auto &view : req_attachment_views_) size += view.size();
+    req_attachment_ = coro_io::heterogeneous_buffer(size);
+    auto *data = req_attachment_.data();
+    std::size_t offset = 0;
+    for (const auto &view : req_attachment_views_) {
+      std::memcpy(data + offset, view.data(), view.size());
+      offset += view.size();
+    }
+  }
   return req_attachment_;
 }
 
 template <typename rpc_protocol>
 coro_io::data_view context_info_t<rpc_protocol>::get_request_attachment2()
     const {
+  get_request_attachment();
   return req_attachment_;
 }
 
 template <typename rpc_protocol>
+std::span<const coro_io::owned_data_view>
+context_info_t<rpc_protocol>::get_request_attachment_views() const noexcept {
+  return req_attachment_views_;
+}
+
+template <typename rpc_protocol>
 std::string context_info_t<rpc_protocol>::release_request_attachment() {
+  get_request_attachment();
   auto str = req_attachment_.get_string();
 #ifdef YLT_ENABLE_CUDA
   if SP_UNLIKELY (!str) {
@@ -831,12 +878,15 @@ std::string context_info_t<rpc_protocol>::release_request_attachment() {
         "need call release_resp_attachment2()");
   }
 #endif
+  req_attachment_views_.clear();
   return std::move(*str);
 }
 
 template <typename rpc_protocol>
 coro_io::heterogeneous_buffer
 context_info_t<rpc_protocol>::release_request_attachment2() {
+  get_request_attachment();
+  req_attachment_views_.clear();
   return std::move(req_attachment_);
 }
 

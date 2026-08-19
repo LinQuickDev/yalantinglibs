@@ -109,7 +109,6 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
     if constexpr (std::is_void_v<return_type>) {
       if constexpr (std::is_void_v<Self>) {
         if constexpr (has_coro_conn_v) {
-          // call void func(coro_conn, args...)
           std::apply(func, std::tuple_cat(
                                std::forward_as_tuple(
                                    context_base<conn_return_type, rpc_protocol>(
@@ -117,13 +116,11 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
                                std::move(args)));
         }
         else {
-          // call void func(args...)
           std::apply(func, std::move(args));
         }
       }
       else {
         if constexpr (has_coro_conn_v) {
-          // call void self->func(coro_conn, args...)
           std::apply(
               func, std::tuple_cat(
                         std::forward_as_tuple(
@@ -132,7 +129,6 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
                         std::move(args)));
         }
         else {
-          // call void self->func(args...)
           std::apply(func, std::tuple_cat(std::forward_as_tuple(*self),
                                           std::move(args)));
         }
@@ -141,18 +137,15 @@ inline std::pair<coro_rpc::err_code, std::string> execute(
     }
     else {
       if constexpr (std::is_void_v<Self>) {
-        // call return_type func(args...)
-
-        return std::pair{err_code{}, serialize_proto::serialize(
-                                         std::apply(func, std::move(args)))};
+        auto ret = std::apply(func, std::move(args));
+        return std::pair{err_code{},
+                         serialize_proto::serialize(std::move(ret))};
       }
       else {
-        // call return_type self->func(args...)
-
+        auto ret = std::apply(func, std::tuple_cat(std::forward_as_tuple(*self),
+                                                   std::move(args)));
         return std::pair{err_code{},
-                         serialize_proto::serialize(std::apply(
-                             func, std::tuple_cat(std::forward_as_tuple(*self),
-                                                  std::move(args))))};
+                         serialize_proto::serialize(std::move(ret))};
       }
     }
   }

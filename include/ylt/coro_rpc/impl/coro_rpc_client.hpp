@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,7 @@
 #include <unordered_map>
 #include <utility>
 #include <variant>
+#include <vector>
 #include <ylt/easylog.hpp>
 
 #include "asio/buffer.hpp"
@@ -61,6 +63,11 @@
 #include "ylt/coro_io/ibverbs/ib_buffer.hpp"
 #include "ylt/coro_io/ibverbs/ib_socket.hpp"
 #endif
+#ifdef YLT_ENABLE_URMA
+#include "ylt/coro_io/urma/urma_rpc_env.hpp"
+#include "ylt/coro_io/urma/urma_socket.hpp"
+#endif
+#include "ylt/coro_io/data_view.hpp"
 #ifdef YLT_ENABLE_ND
 #include "ylt/coro_io/networkdirect/nd_socket.hpp"
 #endif
@@ -255,6 +262,10 @@ class coro_rpc_client {
                  ,
                  coro_io::ib_socket_t::config_t
 #endif
+#ifdef YLT_ENABLE_URMA
+                 ,
+                 coro_io::urma_socket_t::config_t
+#endif
 #ifdef YLT_ENABLE_ND
                  ,
                  coro_io::nd_socket_t::config_t
@@ -285,8 +296,12 @@ class coro_rpc_client {
       coro_io::ExecutorWrapper<> *executor = coro_io::get_global_executor(),
       config conf = {})
       : timer_(std::make_unique<coro_io::period_timer>(
-            executor->get_asio_executor())),
+            executor ? executor->get_asio_executor()
+                     : asio::io_context{}.get_executor())),
         control_(std::make_shared<control_t>(executor, false, conf.local_ip)) {
+    if (!executor) [[unlikely]] {
+      ELOG_ERROR << "coro_rpc_client: executor is nullptr";
+    }
     if (!init_config(conf)) [[unlikely]] {
       close();
     }
@@ -307,6 +322,15 @@ class coro_rpc_client {
 #ifdef YLT_ENABLE_IBV
   [[nodiscard]] bool init_socket_wrapper(
       const coro_io::ib_socket_t::config_t &config) {
+    return control_->socket_wrapper_.init_client(config);
+  }
+#endif
+#ifdef YLT_ENABLE_URMA
+  [[nodiscard]] bool init_socket_wrapper(
+      const coro_io::urma_socket_t::config_t &config) {
+    ELOG_INFO << "URMA init_socket_wrapper: buffer_size=" << config.buffer_size
+              << " recv_buffer_cnt=" << config.recv_buffer_cnt
+              << " send_buffer_cnt=" << config.send_buffer_cnt;
     return control_->socket_wrapper_.init_client(config);
   }
 #endif
@@ -608,13 +632,20 @@ class coro_rpc_client {
   [[nodiscard]] bool init_config(const config &conf) {
     create_tp_ = std::chrono::steady_clock::now();
     config_ = conf;
+#ifdef YLT_ENABLE_URMA
+    if (std::holds_alternative<tcp_config>(config_.socket_config)) {
+      if (auto urma_config = coro_io::try_make_urma_rpc_config()) {
+        config_.socket_config = *urma_config;
+      }
+    }
+#endif
     control_->socket_wrapper_.set_local_ip(config_.local_ip);
-    control_->client_id = conf.client_id;
+    control_->client_id = config_.client_id;
     return std::visit(
         [this](auto &socket_config) {
           return init_socket_wrapper(socket_config);
         },
-        conf.socket_config);
+        config_.socket_config);
   };
 
   auto get_create_time_point() const noexcept { return create_tp_; }
@@ -915,6 +946,15 @@ class coro_rpc_client {
     config_.socket_config = config;
     return init_socket_wrapper(
         std::get<coro_io::ib_socket_t::config_t>(config_.socket_config));
+  }
+#endif
+#ifdef YLT_ENABLE_URMA
+  [[nodiscard]] bool init_urma(
+      const coro_io::urma_socket_t::config_t &config = {}) {
+    ELOG_DEBUG << "URMA init_urma: buffer_size=" << config.buffer_size;
+    config_.socket_config = config;
+    return init_socket_wrapper(
+        std::get<coro_io::urma_socket_t::config_t>(config_.socket_config));
   }
 #endif
 #ifdef YLT_ENABLE_ND
@@ -1223,6 +1263,8 @@ class coro_rpc_client {
       co_return false;
     }
     if (auto self = socket_watcher.lock()) {
+      ELOG_WARN << err_msg << ", close socket by timeout"
+                << ", client_id: " << config_.client_id;
       self->is_timeout_ = is_timeout;
       close_socket_async(self);
       co_return true;
@@ -1301,7 +1343,6 @@ class coro_rpc_client {
     header.magic = coro_rpc_protocol::magic_number;
     header.function_id = func_id<func>();
     header.attach_length = attachment_length;
-    id = request_id_++;
     ELOG_TRACE << "call rpc function name: " << get_func_name<func>()
                << ", send request ID: " << id
                << ", client_id: " << config_.client_id;
@@ -1446,15 +1487,23 @@ class coro_rpc_client {
           promise_(std::move(promise)),
           response_attachment_buffer_(buffer) {}
     coro_io::data_view &get_buffer() { return response_attachment_buffer_; }
+    coro_io::period_timer &timer() { return *timer_; }
     void operator()(resp_body &&buffer, uint8_t rpc_errc) {
+      if (completed_.exchange(true, std::memory_order_acq_rel))
+        return;
       timer_->cancel();
       promise_.setValue(async_rpc_raw_result{async_rpc_raw_result_value_type{
           std::move(buffer), response_attachment_buffer_, rpc_errc}});
     }
     void local_error(std::error_code &ec) {
+      if (completed_.exchange(true, std::memory_order_acq_rel))
+        return;
       timer_->cancel();
       promise_.setValue(async_rpc_raw_result{ec});
     }
+
+   private:
+    std::atomic<bool> completed_ = false;
   };
   struct control_t {
 #ifdef GENERATE_BENCHMARK_DATA
@@ -1464,9 +1513,12 @@ class coro_rpc_client {
     std::atomic<bool> has_closed_ = false;
     coro_io::ExecutorWrapper<> *executor_;
     coro_io::socket_wrapper_t socket_wrapper_;
-    std::unordered_map<uint32_t, handler_t> response_handler_table_;
+    std::mutex response_handler_mtx_;
+    std::unordered_map<uint32_t, std::shared_ptr<handler_t>>
+        response_handler_table_;
     resp_body resp_buffer_;
     std::atomic<uint32_t> recving_cnt_ = 0;
+    std::atomic<bool> recv_running_ = false;
     uint64_t client_id = 0;
     control_t(coro_io::ExecutorWrapper<> *executor, bool is_timeout,
               const std::string &local_ip)
@@ -1544,8 +1596,10 @@ class coro_rpc_client {
     static_check<func, Args...>();
 
     if (config.request_timeout_duration->count() >= 0) {
-      timeout(timer, *config.request_timeout_duration,
-              "rpc call timer canceled")
+      ELOG_DEBUG << "rpc call timer start, timeout_ms="
+                 << config.request_timeout_duration->count()
+                 << ", client_id: " << config_.client_id;
+      timeout(timer, *config.request_timeout_duration, "rpc call timeout")
           .start([](auto &&) {
           });
     }
@@ -1560,10 +1614,14 @@ class coro_rpc_client {
     if (controller->is_timeout_) {
       errc = std::make_error_code(std::errc::timed_out);
     }
-    for (auto &e : controller->response_handler_table_) {
-      e.second.local_error(errc);
+    std::vector<std::shared_ptr<handler_t>> handlers;
+    {
+      std::lock_guard lock(controller->response_handler_mtx_);
+      for (auto &entry : controller->response_handler_table_)
+        handlers.push_back(std::move(entry.second));
+      controller->response_handler_table_.clear();
     }
-    controller->response_handler_table_.clear();
+    for (auto &handler : handlers) handler->local_error(errc);
   }
   template <typename Socket>
   static async_simple::coro::Lazy<void> recv(
@@ -1590,8 +1648,14 @@ class coro_rpc_client {
         }
         break;
       }
-      auto iter = controller->response_handler_table_.find(header.seq_num);
-      if (iter == controller->response_handler_table_.end()) {
+      std::shared_ptr<handler_t> handler;
+      {
+        std::lock_guard lock(controller->response_handler_mtx_);
+        auto iter = controller->response_handler_table_.find(header.seq_num);
+        if (iter != controller->response_handler_table_.end())
+          handler = iter->second;
+      }
+      if (!handler) {
         ELOG_ERROR << "unexists request ID: " << header.seq_num
                    << ". close the socket"
                    << ", client_id: " << controller->client_id;
@@ -1616,7 +1680,7 @@ class coro_rpc_client {
         controller->resp_buffer_.resp_attachment_buf_.clear();
       }
       else {
-        auto &attachment_buffer = iter->second.get_buffer();
+        auto &attachment_buffer = handler->get_buffer();
         if (attachment_buffer.size() < header.attach_length) {
           // allocate attachment buffer
           if (attachment_buffer.size()) [[unlikely]] {
@@ -1689,12 +1753,32 @@ class coro_rpc_client {
       ELOG_DEBUG << "recv rpc response, cost time = " << cost_time
                  << "us, request ID: " << header.seq_num
                  << ", client_id: " << controller->client_id;
-      iter->second(std::move(controller->resp_buffer_), header.err_code);
-      controller->response_handler_table_.erase(iter);
-      if (controller->response_handler_table_.empty()) {
+      (*handler)(std::move(controller->resp_buffer_), header.err_code);
+      bool has_handlers = false;
+      {
+        std::lock_guard lock(controller->response_handler_mtx_);
+        controller->response_handler_table_.erase(header.seq_num);
+        has_handlers = !controller->response_handler_table_.empty();
+      }
+      if (!has_handlers) {
+        controller->recv_running_.store(false, std::memory_order_release);
+        // Re-check: a new send_request may have inserted a handler between
+        // the empty() check and the store. If so, restart the recv loop.
+        {
+          std::lock_guard lock(controller->response_handler_mtx_);
+          has_handlers = !controller->response_handler_table_.empty();
+        }
+        if (has_handlers) {
+          bool expected = false;
+          if (controller->recv_running_.compare_exchange_strong(
+                  expected, true, std::memory_order_acq_rel)) {
+            continue;
+          }
+        }
         co_return;
       }
     } while (true);
+    controller->recv_running_.store(false, std::memory_order_release);
     close_socket_async(controller);
     send_err_response(controller.get(), ret.first);
     co_return;
@@ -1808,41 +1892,50 @@ class coro_rpc_client {
       config.request_timeout_duration = config_.request_timeout_duration;
     }
     assert(config.request_timeout_duration.has_value());
+    id = request_id_++;
 
     auto timer = std::make_unique<coro_io::period_timer>(
         control_->executor_->get_asio_executor());
+    async_simple::Promise<async_rpc_raw_result> promise;
+    auto future = promise.getFuture();
+    auto handler = std::make_shared<handler_t>(
+        std::move(timer), std::move(promise),
+        coro_io::data_view{config.resp_attachment_buf,
+                           config.resp_attachment_buf_gpu_id});
+    bool is_ok = false;
+    {
+      std::lock_guard lock(control_->response_handler_mtx_);
+      is_ok = control_->response_handler_table_.try_emplace(id, handler).second;
+    }
+    if (!is_ok) [[unlikely]] {
+      close();
+      co_return build_failed_rpc_result<rpc_return_t>(
+          rpc_error{coro_rpc::errc::serial_number_conflict});
+    }
     auto result = co_await control_->socket_wrapper_.visit([&](auto &socket) {
-      return send_request_for_impl<func>(socket, config, id, *timer,
+      return send_request_for_impl<func>(socket, config, id, handler->timer(),
                                          std::forward<Args>(args)...);
     });
-    if (!result) {
-      async_simple::Promise<async_rpc_raw_result> promise;
-      auto future = promise.getFuture();
-      bool is_empty = control_->response_handler_table_.empty();
-      auto &&[_, is_ok] = control_->response_handler_table_.try_emplace(
-          id, std::move(timer), std::move(promise),
-          coro_io::data_view{config.resp_attachment_buf,
-                             config.resp_attachment_buf_gpu_id});
-      if (!is_ok) [[unlikely]] {
-        close();
-        co_return build_failed_rpc_result<rpc_return_t>(
-            rpc_error{coro_rpc::errc::serial_number_conflict});
+    if (result) {
+      {
+        std::lock_guard lock(control_->response_handler_mtx_);
+        control_->response_handler_table_.erase(id);
       }
-      else {
-        if (is_empty) {
-          control_->socket_wrapper_.visit([control_ = control_](auto &socket) {
-            recv(control_, socket).start([](auto &&) {
-            });
-          });
-        }
-        co_return deserialize_rpc_result<rpc_return_t>(
-            std::move(future), std::weak_ptr<control_t>{control_},
-            std::move(guard), config_.client_id);
+      if (handler) {
+        handler->timer().cancel();
       }
-    }
-    else {
       co_return build_failed_rpc_result<rpc_return_t>(std::move(result));
     }
+    // Ensure at most one recv coroutine runs per connection.
+    if (!control_->recv_running_.exchange(true)) {
+      control_->socket_wrapper_.visit([control_ = control_](auto &socket) {
+        recv(control_, socket).start([](auto &&) {
+        });
+      });
+    }
+    co_return deserialize_rpc_result<rpc_return_t>(
+        std::move(future), std::weak_ptr<control_t>{control_}, std::move(guard),
+        config_.client_id);
   }
 
   uint32_t get_pipeline_size() const noexcept {
@@ -1868,8 +1961,9 @@ class coro_rpc_client {
 #endif
     std::pair<std::error_code, size_t> ret;
     auto tp = std::chrono::steady_clock::now();
-    ELOG_TRACE << "rpc request send start, client_id: " << config_.client_id
-               << ", request ID: " << id;
+    ELOG_DEBUG << "rpc request send start, client_id: " << config_.client_id
+               << ", request ID: " << id << ", body_size=" << buffer.size()
+               << ", attachment_size=" << req_attachment.size();
 #ifdef UNIT_TEST_INJECT
     if (g_action == inject_action::client_send_bad_header) {
       buffer[0] = (std::byte)(uint8_t(buffer[0]) + 1);
@@ -1925,6 +2019,21 @@ class coro_rpc_client {
             },
             control_->executor_);
       }
+#ifdef YLT_ENABLE_URMA
+      // URMA backpressure: wait for send slots before posting new WRs.
+      // Without this, consecutive async_write calls (even serialized by
+      // write_mutex_) can overrun the remote JFR's pre-posted recv buffers,
+      // causing RNR retry exhaustion and WR_FLUSH_ERR.
+      if constexpr (std::is_same_v<
+                        Socket, coro_io::socket_wrapper_t::urma_socket_type>) {
+        auto slot_ec = co_await socket.waiting_write_over();
+        if (slot_ec) {
+          write_mutex_ = false;
+          close();
+          co_return rpc_error{errc::io_error, slot_ec.message()};
+        }
+      }
+#endif
       if (req_attachment.empty()) {
         ret = co_await coro_io::async_write(
             socket, asio::buffer(buffer.data(), buffer.size()));
@@ -1977,11 +2086,12 @@ class coro_rpc_client {
         co_return rpc_error{errc::io_error, ret.first.message()};
       }
     }
-    ELOG_TRACE << "rpc request send over, client_id: " << config_.client_id
+    ELOG_DEBUG << "rpc request send over, client_id: " << config_.client_id
                << ", cost time = "
                << (std::chrono::steady_clock::now() - tp) /
                       std::chrono::microseconds(1)
-               << "us" << ", request ID: " << id;
+               << "us"
+               << ", request ID: " << id << ", bytes=" << ret.second;
     co_return rpc_error{};
   }
 

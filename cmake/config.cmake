@@ -78,6 +78,43 @@ if (YLT_ENABLE_IBV)
         target_link_libraries(${ylt_target_name} INTERFACE -libverbs -lmlx5)
     endif ()
 endif ()
+option(YLT_ENABLE_URMA "Enable URMA support" OFF)
+if (YLT_ENABLE_URMA)
+    message(STATUS "Enable URMA support")
+    find_path(URMA_INCLUDE_PATH NAMES urma_api.h
+              HINTS ${URMA_ROOT} ENV URMA_ROOT
+              PATHS /usr/include /usr/local/include
+              PATH_SUFFIXES ub/umdk/urma umdk/urma urma
+                            src/urma/lib/urma/core/include)
+    find_path(URMA_BOND_INCLUDE_PATH NAMES urma_ubagg.h
+              HINTS ${URMA_ROOT} ENV URMA_ROOT
+              PATHS /usr/include /usr/local/include
+              PATH_SUFFIXES ub/umdk/urma umdk/urma urma
+                            src/urma/lib/urma/bond/include)
+    if (NOT URMA_INCLUDE_PATH OR NOT URMA_BOND_INCLUDE_PATH)
+        message(FATAL_ERROR
+                "Fail to find URMA headers. Install UMDK headers or set URMA_ROOT.")
+    endif()
+    message(STATUS "Found URMA headers: ${URMA_INCLUDE_PATH}")
+    if (URMA_BOND_INCLUDE_PATH)
+        message(STATUS "Found URMA bonding headers: ${URMA_BOND_INCLUDE_PATH}")
+    endif()
+    if(CMAKE_PROJECT_NAME STREQUAL "yaLanTingLibs")
+        add_compile_definitions("YLT_ENABLE_URMA")
+        include_directories(${URMA_INCLUDE_PATH})
+        if (URMA_BOND_INCLUDE_PATH)
+            include_directories(${URMA_BOND_INCLUDE_PATH})
+        endif()
+        link_libraries(-lurma)
+    else ()
+        target_compile_definitions(${ylt_target_name} INTERFACE "YLT_ENABLE_URMA")
+        target_include_directories(${ylt_target_name} INTERFACE ${URMA_INCLUDE_PATH})
+        if (URMA_BOND_INCLUDE_PATH)
+            target_include_directories(${ylt_target_name} INTERFACE ${URMA_BOND_INCLUDE_PATH})
+        endif()
+        target_link_libraries(${ylt_target_name} INTERFACE -lurma)
+    endif ()
+endif ()
 if (YLT_ENABLE_CUDA)
     message(STATUS "Enable cuda support")
     find_package(CUDAToolkit REQUIRED)
