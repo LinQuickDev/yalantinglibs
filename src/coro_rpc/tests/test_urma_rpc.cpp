@@ -136,7 +136,7 @@ TEST_CASE("urma client init recovers after failure") {
   auto executor = coro_io::get_global_executor();
   coro_io::urma_socket_t::config_t valid_config;
   bool found_usable_device = false;
-  for (const auto &device :
+  for (const auto& device :
        coro_io::urma_device_manager::instance().get_all_devices()) {
     auto pool = device->get_buffer_pool();
     if (!pool)
